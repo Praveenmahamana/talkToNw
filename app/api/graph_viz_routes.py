@@ -362,12 +362,21 @@ async def graph_overview(
     max_nodes: int = Query(2000, ge=20, le=5000, description="Max airports to include (default=all)"),
 ):
     """
-    Return the full 'brain' overview graph: ALL airports ranked by PageRank
-    with ALL edges between them. Nodes coloured by community cluster.
-    Supports animated streaming: frontend loads nodes first, then edges.
+    Return the full heterogeneous 'brain' overview graph:
+      - Airport nodes (ranked by PageRank, coloured by community)
+      - Carrier nodes (top 40 airlines, coloured hot-pink)
+      - AircraftType nodes (top 15 fleets, coloured violet)
+      - Airport↔Airport edges with relation='connects'
+      - Carrier→Airport edges with relation='hubs_at'
+      - Carrier→AircraftType edges with relation='uses_aircraft'
+
+    Entity types and relation labels are LM-enriched via Gemini when available.
     """
     from app.knowledge_graph.graph_builder import get_graph, is_ready
     from app.knowledge_graph.graph_analytics import get_analytics_cache, is_analytics_ready
+    from app.knowledge_graph.entity_enrichment import (
+        build_entity_taxonomy, ENTITY_COLORS, RELATION_COLORS
+    )
     from app.services.workset_service import AIRPORT_INFO
 
     if not is_ready():
@@ -381,25 +390,22 @@ async def graph_overview(
     between  = cache["betweenness"]
     ap_comm  = cache["airport_community"]
 
-    # ALL airports sorted by pagerank (not limited to cache top-N list)
-    pr_max    = max(pagerank.values()) if pagerank else 1.0
+    # ── Airport nodes (PageRank-ranked) ───────────────────────────────────────
     all_sorted = sorted(pagerank.items(), key=lambda x: x[1], reverse=True)[:max_nodes]
     top_codes  = {ap for ap, _ in all_sorted}
 
-    # Build nodes
     nodes: List[Dict] = []
     for ap, pr_score in all_sorted:
         if ap not in G:
             continue
-        gnode    = G.nodes[ap]
-        comm_id  = ap_comm.get(ap, 0)
-        # Node size 8–48 px proportional to pagerank
-        size = max(8, min(48, int(8 + pr_score * 0.40)))
-        info = AIRPORT_INFO.get(ap, {})
+        gnode   = G.nodes[ap]
+        comm_id = ap_comm.get(ap, 0)
+        info    = AIRPORT_INFO.get(ap, {})
         nodes.append({"data": {
             "id":                ap,
             "code":              ap,
             "label":             ap,
+            "entity_type":       "Airport",
             "city":              info.get("city", ap),
             "country":           info.get("country", ""),
             "hub_tier":          gnode.get("hub_tier", "Point-to-point"),
@@ -409,10 +415,9 @@ async def graph_overview(
             "betweenness_score": round(between.get(ap, 0.0), 1),
             "dest_count":        int(gnode.get("dest_count", 0)),
             "out_freq":          int(gnode.get("out_freq", 0)),
-            "size":              size,
         }})
 
-    # Build ALL edges between included airports (deduplicated bidirectional)
+    # ── Airport↔Airport edges with relation='connects' ────────────────────────
     edges: List[Dict] = []
     seen_pairs: set = set()
     freq_max = 1
@@ -430,23 +435,79 @@ async def graph_overview(
             "id":             f"{u}--{v}",
             "source":         u,
             "target":         v,
+            "relation":       "connects",
             "weekly_flights": freq,
         }})
 
-    # Normalise edge weight to 0.5–5 visual thickness
+    # Normalise edge weight 0.5–5
     for e in edges:
         freq = e["data"]["weekly_flights"]
         e["data"]["weight"] = round(0.5 + (freq / freq_max) * 4.5, 2)
 
-    # Sort edges heaviest first (frontend streams them in this order so
-    # important connections appear before minor ones)
+    # Sort heaviest first
     edges.sort(key=lambda e: e["data"]["weekly_flights"], reverse=True)
+
+    # ── Carrier + AircraftType nodes & typed edges (via entity taxonomy) ───────
+    try:
+        taxonomy = build_entity_taxonomy(G)
+
+        for cn in taxonomy["carrier_nodes"]:
+            nodes.append({"data": {
+                "id":           cn["id"],
+                "label":        cn["label"],
+                "name":         cn.get("name", cn["label"]),
+                "entity_type":  "Carrier",
+                "carrier_type": cn.get("carrier_subtype") or cn.get("carrier_type", ""),
+                "alliance":     cn.get("alliance", "None"),
+                "description":  cn.get("description", ""),
+                "routes":       cn.get("routes", 0),
+                "airports_count": cn.get("airports_count", 0),
+                "total_freq":   cn.get("total_freq", 0),
+            }})
+
+        for an in taxonomy["aircraft_nodes"]:
+            nodes.append({"data": {
+                "id":          an["id"],
+                "label":       an["label"],
+                "entity_type": "AircraftType",
+                "operators":   an.get("operators", 0),
+                "routes":      an.get("routes", 0),
+            }})
+
+        for ce in taxonomy["carrier_edges"]:
+            edges.append({"data": {
+                "id":       ce["id"],
+                "source":   ce["source"],
+                "target":   ce["target"],
+                "relation": ce["relation"],
+                "weight":   ce.get("weight", 1.0),
+            }})
+
+        for ae in taxonomy["aircraft_edges"]:
+            edges.append({"data": {
+                "id":       ae["id"],
+                "source":   ae["source"],
+                "target":   ae["target"],
+                "relation": ae["relation"],
+                "weight":   ae.get("weight", 1.0),
+            }})
+
+        carrier_count  = len(taxonomy["carrier_nodes"])
+        aircraft_count = len(taxonomy["aircraft_nodes"])
+    except Exception as exc:
+        logger.warning(f"Entity taxonomy failed (continuing without): {exc}")
+        carrier_count = aircraft_count = 0
 
     return {
         "elements": {"nodes": nodes, "edges": edges},
+        "entity_colors":   ENTITY_COLORS,
+        "relation_colors": RELATION_COLORS,
         "stats": {
             "nodes":           len(nodes),
             "edges":           len(edges),
+            "airport_count":   len(top_codes),
+            "carrier_count":   carrier_count,
+            "aircraft_count":  aircraft_count,
             "total_airports":  cache["total_airports"],
             "total_routes":    cache["total_routes"],
             "community_count": len(set(ap_comm.values())),

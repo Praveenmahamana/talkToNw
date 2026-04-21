@@ -1269,35 +1269,6 @@ function _drawBrainBg(ctx, W, H, tf) {
   ctx.restore();
 }
 
-function _drawBrainMinimap(ctx, nodes, tf, W, H) {
-  if (!nodes.length) return;
-  const MW=130, MH=80, MX=W-MW-10, MY=H-MH-10, PAD=6;
-  let minX=1e9,maxX=-1e9,minY=1e9,maxY=-1e9;
-  nodes.forEach(n => { if(n.x<minX)minX=n.x;if(n.x>maxX)maxX=n.x;if(n.y<minY)minY=n.y;if(n.y>maxY)maxY=n.y; });
-  const rX=Math.max(maxX-minX,1),rY=Math.max(maxY-minY,1);
-  const sc=Math.min((MW-PAD*2)/rX,(MH-PAD*2)/rY);
-  const ox2=MX+PAD+(MW-PAD*2-rX*sc)/2, oy2=MY+PAD+(MH-PAD*2-rY*sc)/2;
-  ctx.save();
-  ctx.globalAlpha=0.88;
-  ctx.fillStyle='rgba(245,240,228,0.92)';
-  ctx.strokeStyle='rgba(100,70,30,0.3)'; ctx.lineWidth=1;
-  ctx.beginPath();
-  if(ctx.roundRect) ctx.roundRect(MX,MY,MW,MH,4); else ctx.rect(MX,MY,MW,MH);
-  ctx.fill(); ctx.stroke();
-  ctx.beginPath(); ctx.rect(MX,MY,MW,MH); ctx.clip();
-  ctx.globalAlpha=0.7;
-  nodes.forEach(n => {
-    ctx.fillStyle=_brainCommColor(n.community);
-    ctx.beginPath(); ctx.arc(n.x*sc+ox2-minX*sc, n.y*sc+oy2-minY*sc, 1.2, 0, Math.PI*2); ctx.fill();
-  });
-  ctx.strokeStyle='rgba(80,50,20,0.8)'; ctx.lineWidth=1.5; ctx.globalAlpha=0.5;
-  ctx.strokeRect((-tf.x/tf.scale)*sc+ox2-minX*sc, (-tf.y/tf.scale)*sc+oy2-minY*sc,
-    (W/tf.scale)*sc, (H/tf.scale)*sc);
-  ctx.globalAlpha=0.45; ctx.font='7px "Courier New",monospace'; ctx.fillStyle='rgba(80,50,20,0.7)';
-  ctx.fillText('MAP', MX+3, MY+10);
-  ctx.restore();
-}
-
 function _brainFrame() {
   if (!_brainCanvas || !_brainCtx) return;
   const dpr = window.devicePixelRatio || 1;
@@ -1384,7 +1355,6 @@ function _brainFrame() {
   });
 
   ctx.restore();
-  _drawBrainMinimap(ctx, nodeArr.filter(n => n.x != null && n.opacity > 0.1), tf, W, H);
   _brainRaf = requestAnimationFrame(_brainFrame);
 }
 
