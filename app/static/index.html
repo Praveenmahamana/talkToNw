@@ -1297,6 +1297,8 @@ function _drawBrainBg(ctx, W, H, tf) {
   ctx.restore();
 }
 
+let _brainAutoFit = false;  // set true during loading for smooth continuous zoom-out
+
 function _brainFrame() {
   if (!_brainCanvas || !_brainCtx) return;
   const dpr = window.devicePixelRatio || 1;
@@ -1304,6 +1306,21 @@ function _brainFrame() {
   const ctx = _brainCtx, tf = _brainTransform;
   const nodeArr = Array.from(_brainNodeMap.values());
   const hasHL = _brainHL.size > 0;
+
+  // Smooth continuous zoom-out while loading: lerp toward fit-all transform
+  if (_brainAutoFit && nodeArr.length > 0) {
+    let minX=1e9, maxX=-1e9, minY=1e9, maxY=-1e9;
+    nodeArr.forEach(n => { if(n.x==null)return; if(n.x<minX)minX=n.x;if(n.x>maxX)maxX=n.x;if(n.y<minY)minY=n.y;if(n.y>maxY)maxY=n.y; });
+    if (minX < 1e9) {
+      const pad = 60;
+      const ts = Math.min((W-pad*2)/Math.max(maxX-minX,1),(H-pad*2)/Math.max(maxY-minY,1), 2.0);
+      const tx = W/2 - (minX+maxX)/2*ts, ty = H/2 - (minY+maxY)/2*ts;
+      const L = 0.04;  // lerp speed — slow enough to look smooth
+      _brainTransform.scale += (ts - _brainTransform.scale) * L;
+      _brainTransform.x    += (tx - _brainTransform.x) * L;
+      _brainTransform.y    += (ty - _brainTransform.y) * L;
+    }
+  }
 
   // Per-frame opacity fade-in: +0.05/frame at 60fps ≈ 300ms full fade (matches reference)
   nodeArr.forEach(n => { if(n.opacity < 1) n.opacity = Math.min(1, n.opacity + 0.05); });
@@ -1323,16 +1340,16 @@ function _brainFrame() {
     const isPartial = !isHL && hasHL && (_brainHL.has(src.id) || _brainHL.has(tgt.id));
     const dimmed    = hasHL && !isHL && !isPartial;
     const relColor  = BRAIN_RELATION_COLORS[e.relation] || BRAIN_RELATION_COLORS.default;
-    const baseAlpha = e.relation === 'connects' ? 0.55 : 0.80;
-    const alpha     = dimmed ? 0.04*e.opacity : (isHL ? 0.95 : isPartial ? 0.65 : baseAlpha) * e.opacity;
+    const baseAlpha = e.relation === 'connects' ? 0.82 : 0.92;
+    const alpha     = dimmed ? 0.04*e.opacity : (isHL ? 1.0 : isPartial ? 0.75 : baseAlpha) * e.opacity;
     if (alpha < 0.01) return;
 
     const x1 = src.x, y1 = src.y, x2 = tgt.x, y2 = tgt.y;
     const dist = Math.sqrt((x2-x1)**2 + (y2-y1)**2);
     const ang  = Math.atan2(y2-y1, x2-x1);
     const lw   = e.relation === 'connects'
-      ? (isHL ? (0.9 + e.weight*0.3)*2 : 0.9 + e.weight*0.3)
-      : (isHL ? 3.0 : 1.8);
+      ? (isHL ? (1.5 + e.weight*0.5)*2 : 1.5 + e.weight*0.5)
+      : (isHL ? 3.5 : 2.2);
 
     ctx.save();
     ctx.globalAlpha = alpha;
@@ -1468,6 +1485,7 @@ function _initBrainCanvas() {
 
   canvas.addEventListener('wheel', e => {
     e.preventDefault();
+    _brainAutoFit = false;  // user took control
     const rect = canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left, my = e.clientY - rect.top;
     const ns = Math.max(0.04, Math.min(8, _brainTransform.scale * (e.deltaY < 0 ? 1.12 : 0.89)));
@@ -1477,6 +1495,7 @@ function _initBrainCanvas() {
   }, { passive: false });
 
   canvas.addEventListener('mousedown', e => {
+    _brainAutoFit = false;  // user took control
     const hit = _brainNodeAt(e.offsetX, e.offsetY);
     if (hit) { _showBrainNodeInfo(hit); }
     else {
@@ -1615,6 +1634,7 @@ async function loadBrainGraph() {
     });
 
     _brainNodeMap.clear(); _brainEdgeArr = []; _brainNodes.clear(); _brainHL = new Set();
+    _brainAutoFit = true;   // start smooth continuous zoom-out
     _initBrainCanvas();
     _initBrainSim();
     _brainRaf = requestAnimationFrame(_brainFrame);
@@ -1648,8 +1668,9 @@ async function loadBrainGraph() {
           airports_count: n.data.airports_count,
           operators:      n.data.operators,
           opacity: 0,
-          x: W/2 + (Math.random()-0.5)*180,
-          y: H/2 + (Math.random()-0.5)*180,
+          // Spread nodes across a wider area so edges are immediately visible
+          x: W/2 + (Math.random()-0.5)*Math.min(W*0.7, 600),
+          y: H/2 + (Math.random()-0.5)*Math.min(H*0.7, 500),
           vx: 0, vy: 0, fx: null, fy: null,
         };
         _brainNodeMap.set(nd.id, nd);
@@ -1690,7 +1711,8 @@ async function loadBrainGraph() {
       _brainSim.force('link').links(_brainEdgeArr);
     }
 
-    // Done
+    // Done — stop auto-fit so user can pan/zoom freely
+    _brainAutoFit = false;
     statusEl.innerHTML = `<span id="brain-status-text" style="color:#3fb950">
       \u2713 ${stats.airport_count||nodeArr.length} airports &nbsp;\u00b7&nbsp;
       ${stats.carrier_count||0} carriers &nbsp;\u00b7&nbsp;
