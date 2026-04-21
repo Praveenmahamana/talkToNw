@@ -315,9 +315,10 @@ def get_network_analytics_summary() -> Dict[str, Any]:
 
 def find_shortest_path(origin: str, dest: str) -> Dict[str, Any]:
     """
-    Find the shortest (minimum block-time) path between two airports.
-    Uses Dijkstra on the NetworkX graph weighted by avg_block_min.
-    Returns up to 3 routes: direct, 1-stop, and 2-stop.
+    Find minimum block-time routing options between two airports.
+
+    Returns up to 3 options: direct (0-stop), best 1-stop, best 2-stop.
+    Uses fast O(n) neighbour enumeration — no slow path generators.
     """
     from app.knowledge_graph.graph_builder import get_graph
     from app.services.workset_service import AIRPORT_INFO, AIRLINE_NAMES
@@ -336,38 +337,66 @@ def find_shortest_path(origin: str, dest: str) -> Dict[str, Any]:
     BT_G = _make_block_time_graph(G)
     paths: List[Dict[str, Any]] = []
 
+    def _leg(src: str, tgt: str) -> Dict:
+        blk = BT_G[src][tgt]["weight"]
+        al  = BT_G[src][tgt].get("airline", "")
+        return {
+            "from": src, "from_city": AIRPORT_INFO.get(src, {}).get("city", src),
+            "to":   tgt, "to_city":   AIRPORT_INFO.get(tgt, {}).get("city", tgt),
+            "airline": al, "airline_name": AIRLINE_NAMES.get(al, al),
+            "block_min": blk,
+        }
+
+    # ── 0-stop (direct) ───────────────────────────────────────────────────────
+    if BT_G.has_edge(o, d):
+        blk = BT_G[o][d]["weight"]
+        paths.append({
+            "stops": 0, "total_block_min": blk,
+            "path": [o, d], "legs": [_leg(o, d)],
+        })
+
+    # ── 1-stop: best intermediate via common o→via→d ─────────────────────────
+    o_succs = set(BT_G.successors(o))
+    d_preds = set(BT_G.predecessors(d))
+    via_nodes = (o_succs & d_preds) - {o, d}
+    if via_nodes:
+        best_cost, best_via = None, None
+        for via in via_nodes:
+            cost = BT_G[o][via]["weight"] + BT_G[via][d]["weight"]
+            if best_cost is None or cost < best_cost:
+                best_cost, best_via = cost, via
+        if best_via:
+            paths.append({
+                "stops": 1, "total_block_min": best_cost,
+                "path": [o, best_via, d],
+                "legs": [_leg(o, best_via), _leg(best_via, d)],
+            })
+
+    # ── 2-stop: Dijkstra overall shortest path (may be 2+ hops) ─────────────
     try:
-        for k_path in range(1, 4):  # 1, 2, 3 hops
-            gen = nx.shortest_simple_paths(BT_G, o, d, weight="weight")
-            for i, path in enumerate(gen):
-                if len(path) - 1 != k_path:
-                    continue
-                legs = []
-                total_block = 0
-                for idx in range(len(path) - 1):
-                    src, tgt = path[idx], path[idx + 1]
-                    blk = BT_G[src][tgt]["weight"]
-                    al  = BT_G[src][tgt].get("airline", "")
-                    total_block += blk
-                    legs.append({
-                        "from": src, "from_city": AIRPORT_INFO.get(src, {}).get("city", src),
-                        "to":   tgt, "to_city":   AIRPORT_INFO.get(tgt, {}).get("city", tgt),
-                        "airline": al, "airline_name": AIRLINE_NAMES.get(al, al),
-                        "block_min": blk,
-                    })
-                paths.append({
-                    "stops":      k_path - 1,
-                    "total_block_min": total_block,
-                    "path":       path,
-                    "legs":       legs,
-                })
-                break  # one path per stop count
-            if len(paths) >= 3:
-                break
-    except nx.NetworkXNoPath:
+        dijk_path = nx.dijkstra_path(BT_G, o, d, weight="weight")
+        hops = len(dijk_path) - 1
+        if hops >= 3:  # 2+ stops not already covered
+            total_blk = sum(BT_G[dijk_path[i]][dijk_path[i+1]]["weight"]
+                            for i in range(hops))
+            legs = [_leg(dijk_path[i], dijk_path[i+1]) for i in range(hops)]
+            paths.append({
+                "stops": hops - 1, "total_block_min": total_blk,
+                "path": dijk_path, "legs": legs,
+            })
+        elif hops == 2 and len(paths) < 2:
+            # Dijkstra found a 1-stop we hadn't captured (shouldn't happen, but guard)
+            total_blk = sum(BT_G[dijk_path[i]][dijk_path[i+1]]["weight"]
+                            for i in range(hops))
+            legs = [_leg(dijk_path[i], dijk_path[i+1]) for i in range(hops)]
+            paths.append({
+                "stops": 1, "total_block_min": total_blk,
+                "path": dijk_path, "legs": legs,
+            })
+    except (nx.NetworkXNoPath, nx.NodeNotFound):
         pass
     except Exception as e:
-        logger.debug(f"Shortest path error {o}→{d}: {e}")
+        logger.debug(f"Dijkstra error {o}→{d}: {e}")
 
     return {
         "origin": o, "destination": d,
@@ -375,5 +404,6 @@ def find_shortest_path(origin: str, dest: str) -> Dict[str, Any]:
         "dest_city":   AIRPORT_INFO.get(d, {}).get("city", d),
         "found": len(paths) > 0,
         "paths": paths,
-        "note": f"{len(paths)} path(s) found from {o} to {d}." if paths else f"No path found from {o} to {d}.",
+        "note": f"{len(paths)} routing option(s) found from {o} to {d}."
+                if paths else f"No path found from {o} to {d}.",
     }

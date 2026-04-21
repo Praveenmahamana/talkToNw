@@ -201,17 +201,24 @@ def init_kuzu() -> bool:
             return _conn is not None
         try:
             db_path = str(_KUZU_DIR)
-            # Always rebuild fresh to stay in sync with DuckDB
-            if Path(db_path).exists():
+            # Try to delete stale DB; on Windows the dir may be locked — handle gracefully
+            dir_existed = Path(db_path).exists()
+            if dir_existed:
                 shutil.rmtree(db_path, ignore_errors=True)
             # Ensure PARENT directory exists; Kuzu creates db_path itself
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
+            dir_still_exists = Path(db_path).exists()
             logger.info(f"Building Kuzu graph database at {db_path} …")
             _db   = kuzu.Database(db_path)
             _conn = kuzu.Connection(_db)
-            _create_schema(_conn)
-            _load_data(_conn)
+
+            if dir_still_exists and dir_existed:
+                # Deletion failed (Windows file lock) — reuse existing schema + data
+                logger.info("Kuzu DB directory could not be removed; reusing existing catalog.")
+            else:
+                _create_schema(_conn)
+                _load_data(_conn)
             _kuzu_built = True
             logger.info("Kuzu graph database ready.")
         except Exception as exc:
