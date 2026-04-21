@@ -1251,8 +1251,8 @@ let _brainPanStart  = null;
 function _brainCommColor(community) {
   return BRAIN_COMM_COLORS[(community || 0) % BRAIN_COMM_COLORS.length];
 }
-function _brainRadius(node) {
-  return Math.max(4, Math.min(22, 4 + Math.sqrt(node.dest_count || 1) * 1.7));
+function _brainRadius(_node) {
+  return 6;   // uniform size for all nodes
 }
 
 function _drawBrainBg(ctx, W, H, tf) {
@@ -1323,12 +1323,12 @@ function _brainFrame() {
     const isHL      = hasHL && _brainHL.has(src.id) && _brainHL.has(tgt.id);
     const isPartial = !isHL && hasHL && (_brainHL.has(src.id) || _brainHL.has(tgt.id));
     const dimmed    = hasHL && !isHL && !isPartial;
-    const alpha     = dimmed ? 0.04*e.opacity : (isHL ? 0.85 : isPartial ? 0.45 : 0.38) * e.opacity;
+    const alpha     = dimmed ? 0.05*e.opacity : (isHL ? 0.95 : isPartial ? 0.65 : 0.72) * e.opacity;
     if (alpha < 0.01) return;
     ctx.save();
     ctx.globalAlpha = alpha;
-    ctx.strokeStyle = isHL ? '#f97316' : '#38bdf8';
-    ctx.lineWidth   = isHL ? (0.7 + e.weight*0.5)*2.0 : 0.7 + e.weight*0.5;
+    ctx.strokeStyle = isHL ? '#f97316' : '#7dd3fc';
+    ctx.lineWidth   = isHL ? (1.2 + e.weight*0.4)*2.0 : 1.2 + e.weight*0.4;
     ctx.lineCap     = 'round';
     ctx.beginPath(); ctx.moveTo(src.x, src.y); ctx.lineTo(tgt.x, tgt.y); ctx.stroke();
     if (isHL) {
