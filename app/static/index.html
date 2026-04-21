@@ -1,0 +1,898 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sabre Network Intelligence</title>
+  <script src="/static/chart.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f5f7fa; color: #1a202c; min-height: 100vh; }
+
+    /* ── Header ── */
+    header {
+      background: #ffffff; border-bottom: 1px solid #e2e8f0;
+      padding: 0 32px; display: flex; align-items: stretch; justify-content: space-between;
+      min-height: 72px; gap: 24px; box-shadow: 0 1px 3px rgba(0,0,0,.06);
+    }
+    .header-brand { display: flex; align-items: center; gap: 14px; padding: 18px 0; flex-shrink: 0; }
+    .header-brand .logo { font-size: 26px; }
+    .header-brand h1 { font-size: 1.25rem; font-weight: 700; color: #1a202c; white-space: nowrap; }
+    .header-brand p  { font-size: 0.75rem; color: #a0aec0; margin-top: 2px; white-space: nowrap; }
+    .header-stats { display: flex; align-items: stretch; gap: 0; flex-wrap: nowrap; overflow-x: auto; }
+    .hstat {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      padding: 14px 20px; border-left: 1px solid #e2e8f0; min-width: 80px;
+      cursor: default; transition: background .15s;
+    }
+    .hstat:hover { background: #f0f4ff; }
+    .hstat-val  { font-size: 1.3rem; font-weight: 700; color: #667eea; line-height: 1; white-space: nowrap; }
+    .hstat-lbl  { font-size: 0.62rem; color: #a0aec0; margin-top: 4px; text-transform: uppercase; letter-spacing: .06em; white-space: nowrap; }
+    .hstat.status-ok   .hstat-val { color: #38a169; }
+    .hstat.status-warn .hstat-val { color: #dd6b20; }
+    .hstat.status-off  .hstat-val { color: #e53e3e; }
+    .hstat-dot { font-size: 0.9rem; }
+
+    /* ── Layout ── */
+    main { max-width: 1400px; margin: 0 auto; padding: 24px 28px; }
+
+    /* ── Chat panel ── */
+    .query-card {
+      background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
+      padding: 20px; margin-bottom: 20px; box-shadow: 0 1px 4px rgba(0,0,0,.05);
+    }
+    .chat-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+    .chat-header h2 { font-size: .72rem; color: #718096; letter-spacing: .05em; text-transform: uppercase; }
+    .chat-header-right { display: flex; align-items: center; gap: 10px; }
+    .session-badge {
+      font-size: 0.68rem; color: #718096; background: #f7fafc;
+      border: 1px solid #e2e8f0; border-radius: 12px; padding: 3px 10px; cursor: default;
+    }
+    .new-thread-btn {
+      font-size: 0.72rem; color: #718096; background: transparent;
+      border: 1px solid #cbd5e0; border-radius: 8px; padding: 4px 12px;
+      cursor: pointer; transition: border-color .2s, color .2s;
+    }
+    .new-thread-btn:hover { border-color: #667eea; color: #667eea; }
+    #chat-thread {
+      background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 8px;
+      min-height: 60px; max-height: 380px; overflow-y: auto;
+      padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px;
+    }
+    #chat-thread.empty::before {
+      content: 'No messages yet. Ask anything about the schedule.';
+      color: #a0aec0; font-size: 0.82rem; margin: auto;
+    }
+    .bubble { display: flex; flex-direction: column; max-width: 88%; }
+    .bubble.user      { align-self: flex-end;   align-items: flex-end; }
+    .bubble.assistant { align-self: flex-start; align-items: flex-start; }
+    .bubble-inner { border-radius: 12px; padding: 10px 14px; font-size: 0.87rem; line-height: 1.65; white-space: pre-wrap; }
+    .bubble.user      .bubble-inner { background: #667eea; color: #fff; border-bottom-right-radius: 3px; }
+    .bubble.assistant .bubble-inner { background: #fff; border: 1px solid #e2e8f0; color: #2d3748; border-bottom-left-radius: 3px; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
+    .bubble-meta { font-size: 0.68rem; color: #a0aec0; margin-top: 4px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .bubble-tool { background: #edf2ff; border: 1px solid #c3dafe; border-radius: 10px; padding: 1px 8px; color: #667eea; font-size: 0.65rem; }
+    .conf-high { color: #38a169; } .conf-medium { color: #dd6b20; } .conf-low { color: #a0aec0; }
+    .typing-indicator { color: #a0aec0; font-size: 0.82rem; font-style: italic; }
+    .query-row { display: flex; gap: 10px; }
+    .query-row input {
+      flex: 1; background: #fff; border: 1px solid #cbd5e0; border-radius: 8px;
+      color: #1a202c; font-size: 0.95rem; padding: 12px 16px; outline: none;
+      transition: border-color .2s, box-shadow .2s;
+    }
+    .query-row input:focus { border-color: #667eea; box-shadow: 0 0 0 3px rgba(102,126,234,.12); }
+    .query-row input::placeholder { color: #cbd5e0; }
+    .query-row button {
+      background: #667eea; color: #fff; border: none; border-radius: 8px;
+      padding: 12px 22px; font-size: 0.9rem; cursor: pointer; font-weight: 600;
+      transition: background .2s; white-space: nowrap;
+    }
+    .query-row button:hover { background: #5a67d8; }
+    .query-row button:disabled { background: #e2e8f0; color: #a0aec0; cursor: not-allowed; }
+
+    /* ── Analysis Panel (full width, below chat) ── */
+    #analysis-panel {
+      display: none;
+      background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
+      padding: 0; margin-bottom: 20px; box-shadow: 0 1px 4px rgba(0,0,0,.05);
+      overflow: hidden;
+    }
+    #analysis-panel.visible { display: block; }
+    .analysis-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 20px; border-bottom: 1px solid #e2e8f0; background: #f8fafc;
+    }
+    .analysis-header h3 { font-size: .72rem; color: #718096; letter-spacing: .05em; text-transform: uppercase; }
+    .analysis-clear-btn {
+      font-size: 0.7rem; color: #a0aec0; background: transparent;
+      border: 1px solid #e2e8f0; border-radius: 6px; padding: 3px 10px; cursor: pointer;
+    }
+    .analysis-clear-btn:hover { color: #667eea; border-color: #667eea; }
+    #analysis-content { padding: 20px; display: flex; flex-direction: column; gap: 20px; }
+
+    /* ── KPI row ── */
+    .kpi-row-wrap { display: flex; gap: 12px; flex-wrap: wrap; }
+    .kpi-card {
+      background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 10px;
+      padding: 14px 20px; min-width: 120px; flex: 1;
+    }
+    .kpi-card.blue   { border-left: 3px solid #2065d1; }
+    .kpi-card.teal   { border-left: 3px solid #0ea5e9; }
+    .kpi-card.amber  { border-left: 3px solid #f59e0b; }
+    .kpi-card.indigo { border-left: 3px solid #6366f1; }
+    .kpi-card.purple { border-left: 3px solid #8b5cf6; }
+    .kpi-card.green  { border-left: 3px solid #10b981; }
+    .kpi-card.slate  { border-left: 3px solid #94a3b8; }
+    .kpi-lbl { font-size: 0.7rem; color: #718096; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 6px; }
+    .kpi-val { font-size: 1.4rem; font-weight: 700; color: #1a202c; }
+
+    /* ── Local/Flow Split ── */
+    .lf-split-card {
+      background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 18px 22px;
+    }
+    .lf-split-title { font-size: 0.75rem; font-weight: 600; color: #4a5568; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 14px; }
+    .lf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+    .lf-metric { }
+    .lf-metric-label { font-size: 0.72rem; color: #718096; margin-bottom: 8px; display: flex; justify-content: space-between; }
+    .lf-metric-label span { font-weight: 600; color: #1a202c; }
+    .lf-bar-track { background: #e2e8f0; border-radius: 4px; height: 8px; display: flex; overflow: hidden; }
+    .lf-bar-local { background: #0ea5e9; height: 100%; transition: width .4s; }
+    .lf-bar-flow  { background: #f59e0b; height: 100%; transition: width .4s; }
+    .lf-legend { display: flex; gap: 16px; margin-top: 8px; font-size: 0.72rem; }
+    .lf-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 4px; vertical-align: middle; }
+    .lf-dot.local { background: #0ea5e9; } .lf-dot.flow { background: #f59e0b; }
+    .lf-connect-section { margin-top: 16px; }
+    .lf-connect-title { font-size: 0.72rem; color: #718096; margin-bottom: 8px; font-weight: 600; }
+    .lf-advice { background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 12px 16px; margin-top: 14px; font-size: 0.82rem; color: #92400e; line-height: 1.6; }
+    .lf-advice strong { color: #78350f; }
+
+    /* ── Viz card ── */
+    .viz-card {
+      background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden;
+      box-shadow: 0 1px 3px rgba(0,0,0,.04);
+    }
+    .viz-card-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 16px; background: #f8fafc; border-bottom: 1px solid #e2e8f0;
+    }
+    .viz-card-title { font-size: 0.82rem; font-weight: 600; color: #2d3748; }
+    .viz-tabs { display: flex; gap: 4px; }
+    .viz-tab {
+      font-size: 0.72rem; color: #718096; background: #fff;
+      border: 1px solid #e2e8f0; border-radius: 6px; padding: 4px 10px; cursor: pointer; transition: all .15s;
+    }
+    .viz-tab.active, .viz-tab:hover { background: #667eea; color: #fff; border-color: #667eea; }
+    .viz-body { padding: 16px; }
+    .viz-view { display: none; }
+    .viz-view.active { display: block; }
+
+    /* ── Charts 2-col grid ── */
+    .chart-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(520px, 1fr)); gap: 16px; }
+    .chart-area { padding: 8px 0; }
+    .chart-canvas-wrap { position: relative; width: 100%; }
+    canvas { width: 100% !important; }
+
+    /* Legend for pie */
+    .chart-legend-wrap { display: flex; flex-direction: column; gap: 5px; margin-top: 10px; max-height: 200px; overflow-y: auto; }
+    .legend-item { display: flex; align-items: center; gap: 8px; font-size: 0.78rem; color: #4a5568; }
+    .legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+    .legend-val { margin-left: auto; font-weight: 600; color: #2d3748; }
+
+    /* ── insightsDB-style Table ── */
+    .dyn-table-wrap { overflow-x: auto; max-height: 420px; overflow-y: auto; border-radius: 6px; }
+    .dyn-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+    .dyn-table thead { position: sticky; top: 0; z-index: 1; }
+    .dyn-table thead th {
+      background: #f1f5f9; color: #475569; padding: 8px 12px;
+      text-align: left; font-weight: 600; font-size: 0.72rem; text-transform: uppercase;
+      letter-spacing: .04em; border-bottom: 2px solid #e2e8f0; white-space: nowrap;
+      cursor: pointer; user-select: none;
+    }
+    .dyn-table thead th:hover { background: #e8eef6; }
+    .dyn-table tbody tr { border-bottom: 1px solid #f1f5f9; transition: background .1s; }
+    .dyn-table tbody tr:hover { background: #f8faff; }
+    .dyn-table tbody td { padding: 7px 12px; color: #374151; white-space: nowrap; }
+    .dyn-table td.num-cell { text-align: right; font-variant-numeric: tabular-nums; color: #2563eb; }
+    .dyn-table td.pct-cell { text-align: right; color: #059669; font-weight: 600; }
+    /* market_summary style */
+    .dyn-table.style-market_summary tbody td:first-child { font-weight: 700; color: #1a202c; }
+    /* flight_view style */
+    .dyn-table.style-flight_view .airline-col { font-weight: 700; }
+    /* itinerary style - highlight connecting rows */
+    .dyn-table.style-itinerary_report tr.itin-connecting { background: #fffbeb; }
+    .sort-ind { opacity: 0.5; font-size: 0.7em; margin-left: 4px; }
+    .table-footer { font-size: 0.72rem; color: #a0aec0; padding: 8px 12px; border-top: 1px solid #f1f5f9; }
+    .table-row-count { font-size: 0.7rem; color: #a0aec0; margin-left: 8px; }
+
+    /* ── Simulation Panel (full width) ── */
+    .sim-panel {
+      background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
+      padding: 24px; margin-bottom: 20px; box-shadow: 0 1px 4px rgba(0,0,0,.05);
+    }
+    .sim-panel h2 { font-size: .72rem; color: #718096; margin-bottom: 18px; letter-spacing: .05em; text-transform: uppercase; }
+    .sim-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+    .sim-form label { font-size: 0.75rem; color: #718096; display: block; margin-bottom: 4px; }
+    .sim-form input {
+      width: 100%; background: #f7fafc; border: 1px solid #cbd5e0; border-radius: 6px;
+      color: #1a202c; font-size: 0.88rem; padding: 9px 10px; outline: none; transition: border-color .2s;
+    }
+    .sim-form input:focus { border-color: #667eea; background: #fff; }
+    .sim-btn {
+      background: #38a169; color: #fff; border: none; border-radius: 8px;
+      padding: 11px 24px; font-size: 0.88rem; cursor: pointer; font-weight: 600;
+      margin-top: 20px; transition: background .2s;
+    }
+    .sim-btn:hover { background: #2f855a; }
+    #sim-result { margin-top: 18px; background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 18px; display: none; }
+    .score-row { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
+    .score-box { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px 22px; text-align: center; min-width: 120px; }
+    .score-box .score-val { font-size: 1.7rem; font-weight: 700; color: #1a202c; }
+    .score-box .score-lbl { font-size: 0.7rem; color: #718096; text-transform: uppercase; }
+    .verdict { font-size: 0.9rem; color: #1a202c; margin-bottom: 10px; font-weight: 500; }
+    .tag-list { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+    .tag { border-radius: 12px; padding: 3px 10px; font-size: 0.72rem; font-weight: 500; }
+    .tag.violation { background: #fff5f5; color: #c53030; border: 1px solid #fed7d7; }
+    .tag.warning   { background: #fffaf0; color: #c05621; border: 1px solid #feebc8; }
+    .tag.ok        { background: #f0fff4; color: #276749; border: 1px solid #c6f6d5; }
+
+    footer { text-align: center; color: #cbd5e0; font-size: 0.75rem; padding: 24px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="header-brand">
+    <div class="logo">✈️</div>
+    <div>
+      <h1>Sabre Network Intelligence</h1>
+      <p>Vertex AI · Rule Engine · DuckDB · FastAPI</p>
+    </div>
+  </div>
+  <div class="header-stats" id="header-stats">
+    <div class="hstat" title="Total unique scheduled flights">
+      <span class="hstat-val" id="s-flights">—</span>
+      <span class="hstat-lbl">Flights</span>
+    </div>
+    <div class="hstat" title="Airlines in schedule">
+      <span class="hstat-val" id="s-airlines">—</span>
+      <span class="hstat-lbl">Airlines</span>
+    </div>
+    <div class="hstat" title="Unique O&amp;D route pairs">
+      <span class="hstat-val" id="s-routes">—</span>
+      <span class="hstat-lbl">Routes</span>
+    </div>
+    <div class="hstat" title="Unique origin airports">
+      <span class="hstat-val" id="s-origins">—</span>
+      <span class="hstat-lbl">Origins</span>
+    </div>
+    <div class="hstat" title="Unique destination airports">
+      <span class="hstat-val" id="s-dests">—</span>
+      <span class="hstat-lbl">Destinations</span>
+    </div>
+    <div class="hstat" title="Avg daily flights across all routes">
+      <span class="hstat-val" id="s-daily">—</span>
+      <span class="hstat-lbl">Daily Avg</span>
+    </div>
+    <div class="hstat" id="hstat-db" title="Database status">
+      <span class="hstat-val hstat-dot" id="s-db">●</span>
+      <span class="hstat-lbl">DB</span>
+    </div>
+    <div class="hstat" id="hstat-ai" title="Vertex AI status">
+      <span class="hstat-val hstat-dot" id="s-ai">●</span>
+      <span class="hstat-lbl">AI</span>
+    </div>
+  </div>
+</header>
+
+<main>
+  <!-- Chat -->
+  <div class="query-card">
+    <div class="chat-header">
+      <h2>💬 Talk to Network</h2>
+      <div class="chat-header-right">
+        <span class="session-badge" id="session-badge" title="Session ID">New session</span>
+        <button class="new-thread-btn" onclick="newThread()">+ New Thread</button>
+      </div>
+    </div>
+    <div id="chat-thread" class="empty"></div>
+    <div class="query-row">
+      <input id="q-input" type="text"
+             placeholder="e.g. Summarize flights from DXB to BOM — competitor analysis, pax types, timing"
+             onkeydown="if(event.key==='Enter') askQuery()" />
+      <button id="q-btn" onclick="askQuery()">Ask</button>
+    </div>
+  </div>
+
+  <!-- Analysis Panel: full-width, populated after each query -->
+  <div id="analysis-panel">
+    <div class="analysis-header">
+      <h3 id="analysis-title">📊 Analysis Results</h3>
+      <button class="analysis-clear-btn" onclick="clearAnalysis()">✕ Clear</button>
+    </div>
+    <div id="analysis-content"></div>
+  </div>
+
+  <!-- Simulation -->
+  <div class="sim-panel">
+    <h2>🔬 Simulate Add Flight</h2>
+    <div class="sim-form">
+      <div><label>Origin (IATA)</label><input id="sim-origin" type="text" placeholder="DXB" maxlength="3" style="text-transform:uppercase" /></div>
+      <div><label>Destination (IATA)</label><input id="sim-dest" type="text" placeholder="BOM" maxlength="3" style="text-transform:uppercase" /></div>
+      <div><label>Departure (YYYY-MM-DD HH:MM)</label><input id="sim-dep" type="text" placeholder="2024-10-27 08:00" /></div>
+      <div><label>Aircraft Type</label><input id="sim-ac" type="text" placeholder="73H" /></div>
+      <div><label>Airline (IATA)</label><input id="sim-airline" type="text" placeholder="FZ" maxlength="2" style="text-transform:uppercase" /></div>
+    </div>
+    <button class="sim-btn" onclick="runSim()">Run Simulation</button>
+    <div id="sim-result"></div>
+  </div>
+</main>
+
+<footer>Sabre Network Intelligence · Vertex AI gemini-2.5-flash · DuckDB</footer>
+
+<script>
+const BASE = '';
+const PIE_COLORS = ["#2065d1","#0ea5e9","#10b981","#f59e0b","#ef4444","#8b5cf6","#ec4899","#14b8a6","#f97316","#06b6d4","#84cc16","#6366f1"];
+let _chartSeq = 0;
+const _charts = {};
+
+// ── Status loader ──────────────────────────────────────────────────────────
+async function loadStatus() {
+  try {
+    const h = await fetch(`${BASE}/api/v1/health`).then(r => r.json());
+    const dbEl = document.getElementById('hstat-db');
+    const aiEl = document.getElementById('hstat-ai');
+    if (h.db_flight_count > 0) {
+      dbEl.classList.add('status-ok');
+      document.getElementById('s-db').title = `DB online · ${h.db_flight_count.toLocaleString()} rows`;
+    } else { dbEl.classList.add('status-warn'); }
+    if (h.vertex_ai) {
+      aiEl.classList.add('status-ok');
+    } else {
+      aiEl.classList.add('status-warn');
+      document.getElementById('s-ai').style.color = '#ed8936';
+    }
+  } catch { document.getElementById('hstat-db').classList.add('status-off'); }
+
+  try {
+    const s = await fetch(`${BASE}/api/v1/schedule/summary`).then(r => r.json());
+    const fmt = n => (n || 0).toLocaleString();
+    document.getElementById('s-flights').textContent  = fmt(s.unique_flights);
+    document.getElementById('s-airlines').textContent = fmt(s.airlines);
+    document.getElementById('s-routes').textContent   = fmt(s.routes);
+    document.getElementById('s-origins').textContent  = fmt(s.origins);
+    document.getElementById('s-dests').textContent    = fmt(s.destinations);
+    document.getElementById('s-daily').textContent    = fmt(s.daily_avg);
+  } catch(e) { console.warn('Summary load failed:', e); }
+}
+
+// ── Chat state ──────────────────────────────────────────────────────────────
+let currentSessionId = null;
+
+function newThread() {
+  currentSessionId = null;
+  const thread = document.getElementById('chat-thread');
+  thread.innerHTML = '';
+  thread.classList.add('empty');
+  document.getElementById('session-badge').textContent = 'New session';
+  clearAnalysis();
+  document.getElementById('q-input').focus();
+}
+
+function clearAnalysis() {
+  const panel = document.getElementById('analysis-panel');
+  panel.classList.remove('visible');
+  document.getElementById('analysis-content').innerHTML = '';
+  // destroy orphaned charts
+  Object.keys(_charts).forEach(id => {
+    try { _charts[id].destroy(); } catch {}
+    delete _charts[id];
+  });
+}
+
+function appendBubble(role, text, meta) {
+  const thread = document.getElementById('chat-thread');
+  thread.classList.remove('empty');
+  const wrap = document.createElement('div');
+  wrap.className = `bubble ${role}`;
+  const inner = document.createElement('div');
+  inner.className = 'bubble-inner';
+  inner.textContent = text;
+  wrap.appendChild(inner);
+  if (meta) {
+    const m = document.createElement('div');
+    m.className = 'bubble-meta';
+    if (meta.ts) m.innerHTML += `<span>${meta.ts}</span>`;
+    if (meta.tools && meta.tools.length)
+      meta.tools.forEach(t => m.innerHTML += `<span class="bubble-tool">${escHtml(t)}</span>`);
+    if (meta.confidence) {
+      const cls = meta.confidence === 'High' ? 'conf-high' : meta.confidence === 'Medium' ? 'conf-medium' : 'conf-low';
+      m.innerHTML += `<span class="${cls}">${meta.confidence}</span>`;
+    }
+    if (meta.time) m.innerHTML += `<span>${meta.time}s</span>`;
+    wrap.appendChild(m);
+  }
+  thread.appendChild(wrap);
+  thread.scrollTop = thread.scrollHeight;
+  return wrap;
+}
+
+function showTyping() {
+  const thread = document.getElementById('chat-thread');
+  thread.classList.remove('empty');
+  const el = document.createElement('div');
+  el.className = 'typing-indicator'; el.id = 'typing';
+  el.textContent = '⟳ Model is thinking…';
+  thread.appendChild(el);
+  thread.scrollTop = thread.scrollHeight;
+}
+function hideTyping() { const el = document.getElementById('typing'); if (el) el.remove(); }
+
+// ── Query ───────────────────────────────────────────────────────────────────
+async function askQuery() {
+  const q = document.getElementById('q-input').value.trim();
+  if (!q) return;
+  const btn = document.getElementById('q-btn');
+  btn.disabled = true; btn.textContent = '…';
+  const now = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  appendBubble('user', q, {ts: now});
+  document.getElementById('q-input').value = '';
+  showTyping();
+  try {
+    const body = { query: q };
+    if (currentSessionId) body.session_id = currentSessionId;
+    const r = await fetch(`${BASE}/api/v1/query`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    }).then(r => r.json());
+
+    hideTyping();
+    currentSessionId = r.session_id;
+    const short = currentSessionId ? currentSessionId.substring(0, 8) + '…' : '';
+    document.getElementById('session-badge').textContent = `Session · ${short} · turn ${r.turn}`;
+
+    appendBubble('assistant', r.answer || 'No answer.', {
+      ts: new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}),
+      tools: r.tools_used || [],
+      confidence: r.confidence,
+      time: r.response_time,
+    });
+
+    // Render visualizations in the full-width analysis panel
+    if (r.visualizations && r.visualizations.length) {
+      document.getElementById('analysis-title').textContent = `📊 Analysis: ${q.substring(0,60)}${q.length>60?'…':''}`;
+      const content = document.getElementById('analysis-content');
+      content.innerHTML = '';
+      // destroy old charts
+      Object.keys(_charts).forEach(id => { try { _charts[id].destroy(); } catch {} delete _charts[id]; });
+      renderAnalysisContent(r.visualizations, content);
+      document.getElementById('analysis-panel').classList.add('visible');
+      document.getElementById('analysis-panel').scrollIntoView({behavior:'smooth', block:'nearest'});
+    }
+  } catch(e) {
+    hideTyping();
+    appendBubble('assistant', '⚠ Error: ' + e.message, null);
+  }
+  btn.disabled = false; btn.textContent = 'Ask';
+}
+
+// ── Analysis panel rendering ────────────────────────────────────────────────
+function renderAnalysisContent(vizs, container) {
+  if (!vizs || !vizs.length) return;
+
+  const kpiVizs        = vizs.filter(v => v.type === 'kpi_row');
+  const lfVizs         = vizs.filter(v => v.type === 'local_flow_split');
+  const tableVizs      = vizs.filter(v => v.type === 'table');
+  const chartVizs      = vizs.filter(v => ['bar','horizontal_bar','pie'].includes(v.type));
+
+  // 1. KPI rows
+  kpiVizs.forEach(v => container.appendChild(renderKpiRow(v)));
+
+  // 2. Local/Flow split (demand mix)
+  lfVizs.forEach(v => container.appendChild(renderLocalFlowSplit(v)));
+
+  // 3. Tables (each full width)
+  tableVizs.forEach(v => {
+    const card = makeCard(v.title, v.row_count);
+    card.querySelector('.viz-body').appendChild(renderTableView(v));
+    container.appendChild(card);
+  });
+
+  // 4. Charts in 2-col grid
+  if (chartVizs.length) {
+    const grid = document.createElement('div');
+    grid.className = 'chart-grid';
+
+    // Try to pair tables with charts by title similarity
+    chartVizs.forEach(cv => {
+      const pairedTable = tableVizs.find(tv => titlesRelated(tv.title, cv.title));
+      if (pairedTable) {
+        grid.appendChild(renderDualCard(pairedTable, cv));
+      } else {
+        grid.appendChild(renderSingleChartCard(cv));
+      }
+    });
+    container.appendChild(grid);
+  }
+}
+
+function makeCard(title, rowCount) {
+  const card = document.createElement('div');
+  card.className = 'viz-card';
+  const hdr = document.createElement('div');
+  hdr.className = 'viz-card-header';
+  const rcStr = rowCount ? `<span class="table-row-count">(${rowCount} rows)</span>` : '';
+  hdr.innerHTML = `<span class="viz-card-title">${escHtml(title || '')}</span>${rcStr}`;
+  card.appendChild(hdr);
+  const body = document.createElement('div');
+  body.className = 'viz-body';
+  card.appendChild(body);
+  return card;
+}
+
+function renderKpiRow(viz) {
+  const wrap = document.createElement('div');
+  wrap.className = 'kpi-row-wrap';
+  (viz.cards || []).forEach(c => {
+    const card = document.createElement('div');
+    card.className = `kpi-card ${c.tone || ''}`;
+    card.innerHTML = `<div class="kpi-lbl">${escHtml(c.label)}</div><div class="kpi-val">${escHtml(c.value)}</div>`;
+    wrap.appendChild(card);
+  });
+  return wrap;
+}
+
+function renderLocalFlowSplit(viz) {
+  const card = document.createElement('div');
+  card.className = 'lf-split-card';
+  const localPax = viz.local_pax || 0, flowPax = viz.flow_pax || 0;
+  const localPct = viz.local_pct || 0, flowPct = viz.flow_pct || 0;
+  const localRev = viz.local_rev, flowRev = viz.flow_rev;
+  const lrPct = viz.local_rev_pct, frPct = viz.flow_rev_pct;
+  const connecting = viz.connecting_routes || [];
+
+  const fmt = n => Number(n || 0).toLocaleString(undefined, {maximumFractionDigits:0});
+  const fmtPct = p => `${Number(p||0).toFixed(1)}%`;
+
+  let html = `<div class="lf-split-title">📊 ${escHtml(viz.title || 'Demand Mix')}</div>
+  <div class="lf-grid">
+    <div class="lf-metric">
+      <div class="lf-metric-label">Passengers <span>${fmt(localPax + flowPax)} total</span></div>
+      <div class="lf-bar-track">
+        <div class="lf-bar-local" style="width:${localPct}%"></div>
+        <div class="lf-bar-flow"  style="width:${flowPct}%"></div>
+      </div>
+      <div class="lf-legend">
+        <span><span class="lf-dot local"></span>Local: ${fmt(localPax)} (${fmtPct(localPct)})</span>
+        <span><span class="lf-dot flow"></span>Flow: ${fmt(flowPax)} (${fmtPct(flowPct)})</span>
+      </div>
+    </div>`;
+
+  if (localRev != null || flowRev != null) {
+    html += `
+    <div class="lf-metric">
+      <div class="lf-metric-label">Revenue <span>$${fmt((localRev||0)+(flowRev||0))}</span></div>
+      <div class="lf-bar-track">
+        <div class="lf-bar-local" style="width:${lrPct||0}%"></div>
+        <div class="lf-bar-flow"  style="width:${frPct||0}%"></div>
+      </div>
+      <div class="lf-legend">
+        <span><span class="lf-dot local"></span>Local Rev: $${fmt(localRev)} (${fmtPct(lrPct)})</span>
+        <span><span class="lf-dot flow"></span>Flow Rev: $${fmt(flowRev)} (${fmtPct(frPct)})</span>
+      </div>
+    </div>`;
+  }
+  html += `</div>`;
+
+  // Connecting routes
+  if (connecting.length) {
+    html += `<div class="lf-connect-section">
+      <div class="lf-connect-title">🔗 Top Connecting Routes (Flow Contributors)</div>`;
+    connecting.slice(0,8).forEach(cr => {
+      const via = cr.via || cr.connect_point || cr.hub || '';
+      const al  = cr.airline || cr.carrier || '';
+      const freq = cr.frequency || cr.weekly_freq || '';
+      const ct  = cr.connect_time_min ? `${cr.connect_time_min}min cnx` : '';
+      html += `<div style="font-size:0.78rem;color:#4a5568;padding:3px 0;border-bottom:1px solid #f1f5f9">
+        ${via ? `<strong>${escHtml(via)}</strong> via ${escHtml(al)}` : escHtml(JSON.stringify(cr))}
+        ${freq ? ` · ${escHtml(String(freq))}x/wk` : ''} ${ct ? ` · ${ct}` : ''}
+      </div>`;
+    });
+    html += `</div>`;
+  }
+
+  // Strategy advice
+  const adviceLines = [];
+  if (flowPct > 60) {
+    adviceLines.push(`<strong>High flow dependency (${fmtPct(flowPct)})</strong> — Revenue is vulnerable if a hub airline (e.g. EK/EY/QR) adds direct service. Diversify by stimulating local O&D demand through lower fares, co-marketing, or boosting frequency.`);
+  } else if (flowPct > 30) {
+    adviceLines.push(`Flow traffic at ${fmtPct(flowPct)} — a healthy mix. To <strong>increase flow</strong>: improve connection time at hubs, codeshare with feed partners, or add mid-day frequency for better bank alignment. To <strong>reduce flow dependency</strong>: direct O&D promotions, corporate deals, or fare unbundling to attract local pax.`);
+  } else if (localPct > 70) {
+    adviceLines.push(`<strong>Strong local market (${fmtPct(localPct)})</strong> — Route is resilient to hub competition. To <strong>grow flow contribution</strong>: establish codeshare agreements, align departure banks at connection hubs, or operate via a hub stop.`);
+  }
+  if (connecting.length) {
+    adviceLines.push(`${connecting.length} connecting route(s) feed this market. Hub airports like DXB, DOH, AUH, and IST generate the most flow. Strengthening interline or codeshare agreements at these hubs can directly increase flow pax.`);
+  }
+  if (adviceLines.length) {
+    html += `<div class="lf-advice">${adviceLines.join('<br><br>')}</div>`;
+  }
+
+  card.innerHTML = html;
+  return card;
+}
+
+function renderDualCard(tableViz, chartViz) {
+  const card = document.createElement('div');
+  card.className = 'viz-card';
+  const uid = 'vc' + (_chartSeq++);
+  const hdr = document.createElement('div');
+  hdr.className = 'viz-card-header';
+  hdr.innerHTML = `
+    <span class="viz-card-title">${escHtml(tableViz.title || '')}</span>
+    <div class="viz-tabs">
+      <button class="viz-tab active" onclick="switchTab('${uid}','table',this)">⊞ Table</button>
+      <button class="viz-tab"       onclick="switchTab('${uid}','chart',this)">${chartIcon(chartViz.type)} Chart</button>
+    </div>`;
+  card.appendChild(hdr);
+  const body = document.createElement('div');
+  body.className = 'viz-body'; body.id = uid;
+  const tv = document.createElement('div');
+  tv.className = 'viz-view active'; tv.dataset.view = 'table';
+  tv.appendChild(renderTableView(tableViz));
+  const cv = document.createElement('div');
+  cv.className = 'viz-view'; cv.dataset.view = 'chart';
+  cv.appendChild(chartViz.type === 'pie' ? renderPieView(chartViz) : renderBarView(chartViz));
+  body.appendChild(tv); body.appendChild(cv);
+  card.appendChild(body);
+  return card;
+}
+
+function renderSingleChartCard(viz) {
+  const card = makeCard(viz.title);
+  card.querySelector('.viz-body').appendChild(
+    viz.type === 'pie' ? renderPieView(viz) : renderBarView(viz)
+  );
+  return card;
+}
+
+function switchTab(uid, view, btn) {
+  const body = document.getElementById(uid);
+  if (!body) return;
+  body.querySelectorAll('.viz-view').forEach(v => { v.classList.toggle('active', v.dataset.view === view); });
+  btn.closest('.viz-tabs').querySelectorAll('.viz-tab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+
+function chartIcon(type) {
+  return type === 'pie' ? '◔' : type === 'horizontal_bar' ? '▬' : '▥';
+}
+
+function titlesRelated(t1, t2) {
+  const words1 = t1.toLowerCase().split(/[\s·\-]+/);
+  const words2 = t2.toLowerCase().split(/[\s·\-]+/);
+  const shared = words1.filter(w => w.length > 3 && words2.includes(w));
+  return shared.length >= 2;
+}
+
+// ── Table renderer ─────────────────────────────────────────────────────────
+function renderTableView(viz) {
+  const wrap = document.createElement('div');
+  const columns = viz.columns || [];
+  const rows    = viz.rows || [];
+  const rowCount = viz.row_count || rows.length;
+  const tableStyle = viz.table_style || '';
+
+  let sortCol = null, sortDir = 1;
+  let currentRows = [...rows];
+
+  const tableWrap = document.createElement('div');
+  tableWrap.className = 'dyn-table-wrap';
+  const table = document.createElement('table');
+  table.className = `dyn-table${tableStyle ? ' style-' + tableStyle : ''}`;
+
+  // Detect pct/num columns
+  const pctCols = columns.filter(c => /pct|share|percent/i.test(c));
+  const numCols = columns.filter(c => {
+    const vals = rows.slice(0,10).map(r => r[c]).filter(v => v != null);
+    return vals.length && vals.every(v => typeof v === 'number' || (!isNaN(parseFloat(v)) && v !== ''));
+  });
+
+  const thead = document.createElement('thead');
+  const tr = document.createElement('tr');
+  columns.forEach(col => {
+    const th = document.createElement('th');
+    th.innerHTML = `${escHtml(col.replace(/_/g,' '))} <span class="sort-ind">⇅</span>`;
+    th.addEventListener('click', () => {
+      if (sortCol === col) sortDir *= -1; else { sortCol = col; sortDir = 1; }
+      thead.querySelectorAll('.sort-ind').forEach(s => s.textContent = '⇅');
+      th.querySelector('.sort-ind').textContent = sortDir === 1 ? '▲' : '▼';
+      currentRows.sort((a, b) => {
+        let va = a[col], vb = b[col];
+        const na = parseFloat(va), nb = parseFloat(vb);
+        if (!isNaN(na) && !isNaN(nb)) return (na - nb) * sortDir;
+        return String(va || '').localeCompare(String(vb || '')) * sortDir;
+      });
+      redraw();
+    });
+    tr.appendChild(th);
+  });
+  thead.appendChild(tr);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  table.appendChild(tbody);
+  tableWrap.appendChild(table);
+  wrap.appendChild(tableWrap);
+
+  function redraw() {
+    tbody.innerHTML = '';
+    currentRows.forEach(row => {
+      const tr = document.createElement('tr');
+      columns.forEach(col => {
+        const td = document.createElement('td');
+        const val = row[col];
+        const isPct = pctCols.includes(col);
+        const isNum = numCols.includes(col) || typeof val === 'number';
+        if (isPct) td.className = 'pct-cell';
+        else if (isNum) td.className = 'num-cell';
+        if (val == null) { td.textContent = '—'; }
+        else if (isPct) { td.textContent = typeof val === 'number' ? val.toFixed(1) + '%' : String(val); }
+        else if (typeof val === 'number') { td.textContent = val.toLocaleString(undefined, {maximumFractionDigits:2}); }
+        else { td.textContent = String(val); }
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+  }
+
+  if (rowCount > rows.length) {
+    const footer = document.createElement('div');
+    footer.className = 'table-footer';
+    footer.textContent = `Showing ${rows.length.toLocaleString()} of ${rowCount.toLocaleString()} rows`;
+    wrap.appendChild(footer);
+  }
+  redraw();
+  return wrap;
+}
+
+// ── Bar chart renderer ─────────────────────────────────────────────────────
+function renderBarView(viz) {
+  const area = document.createElement('div');
+  area.className = 'chart-area';
+  const canvasWrap = document.createElement('div');
+  canvasWrap.className = 'chart-canvas-wrap';
+  const canvas = document.createElement('canvas');
+  const cid = 'chart-' + (_chartSeq++);
+  canvas.id = cid;
+  const isHoriz = viz.type === 'horizontal_bar';
+  const nLabels = (viz.data?.labels || []).length;
+  canvas.height = isHoriz ? Math.max(160, nLabels * 26) : 240;
+  canvasWrap.appendChild(canvas);
+  area.appendChild(canvasWrap);
+
+  const data = viz.data || {};
+  setTimeout(() => {
+    if (_charts[cid]) { _charts[cid].destroy(); delete _charts[cid]; }
+    const ctx = document.getElementById(cid);
+    if (!ctx) return;
+    _charts[cid] = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: data.labels || [],
+        datasets: [{
+          data: data.values || [],
+          backgroundColor: (data.labels||[]).map((_, i) => PIE_COLORS[i % PIE_COLORS.length] + 'cc'),
+          borderColor:     (data.labels||[]).map((_, i) => PIE_COLORS[i % PIE_COLORS.length]),
+          borderWidth: 1, borderRadius: 3,
+        }]
+      },
+      options: {
+        indexAxis: isHoriz ? 'y' : 'x',
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => ` ${ctx.raw}` } } },
+        scales: {
+          x: { grid: { color: '#f0f4f8' }, ticks: { font: { size: 11 }, color: '#718096' } },
+          y: { grid: { color: '#f0f4f8' }, ticks: { font: { size: 11 }, color: '#718096' } },
+        }
+      }
+    });
+  }, 0);
+  return area;
+}
+
+// ── Pie / Doughnut renderer ────────────────────────────────────────────────
+function renderPieView(viz) {
+  const area = document.createElement('div');
+  area.className = 'chart-area';
+  const canvasWrap = document.createElement('div');
+  canvasWrap.className = 'chart-canvas-wrap';
+  canvasWrap.style.maxWidth = '220px';
+  const canvas = document.createElement('canvas');
+  const cid = 'chart-' + (_chartSeq++);
+  canvas.id = cid; canvas.width = 200; canvas.height = 200;
+  canvasWrap.appendChild(canvas);
+  area.appendChild(canvasWrap);
+  const slices = viz.slices || [];
+  const total  = slices.reduce((s, x) => s + x.value, 0);
+  const legend = document.createElement('div');
+  legend.className = 'chart-legend-wrap';
+  slices.forEach((s, i) => {
+    const pct = total > 0 ? (s.value / total * 100).toFixed(1) : '0.0';
+    const item = document.createElement('div'); item.className = 'legend-item';
+    item.innerHTML = `<span class="legend-dot" style="background:${PIE_COLORS[i%PIE_COLORS.length]}"></span><span>${escHtml(s.label)}</span><span class="legend-val">${pct}%</span>`;
+    legend.appendChild(item);
+  });
+  area.appendChild(legend);
+  setTimeout(() => {
+    if (_charts[cid]) { _charts[cid].destroy(); delete _charts[cid]; }
+    const ctx = document.getElementById(cid);
+    if (!ctx) return;
+    _charts[cid] = new Chart(ctx, {
+      type: 'doughnut',
+      data: {
+        labels: slices.map(s => s.label),
+        datasets: [{ data: slices.map(s => s.value), backgroundColor: slices.map((_, i) => PIE_COLORS[i%PIE_COLORS.length]), borderColor: '#fff', borderWidth: 2 }]
+      },
+      options: {
+        responsive: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: ctx => { const pct = total > 0 ? (ctx.raw/total*100).toFixed(1) : 0; return ` ${ctx.label}: ${ctx.raw} (${pct}%)`; } } }
+        },
+        cutout: '55%',
+      }
+    });
+  }, 0);
+  return area;
+}
+
+function escHtml(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Simulation ──────────────────────────────────────────────────────────────
+async function runSim() {
+  const origin  = document.getElementById('sim-origin').value.trim().toUpperCase();
+  const dest    = document.getElementById('sim-dest').value.trim().toUpperCase();
+  const dep     = document.getElementById('sim-dep').value.trim();
+  const ac      = document.getElementById('sim-ac').value.trim().toUpperCase();
+  const airline = document.getElementById('sim-airline').value.trim().toUpperCase();
+  if (!origin || !dest || !dep) { alert('Origin, destination and departure are required.'); return; }
+
+  const box = document.getElementById('sim-result');
+  box.style.display = 'block';
+  box.innerHTML = '<p style="color:#718096;font-size:.85rem">Running simulation…</p>';
+
+  try {
+    const r = await fetch(`${BASE}/api/v1/simulate/add-flight`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ origin, destination: dest, departure_local: dep, aircraft_type: ac, airline })
+    }).then(r => r.json());
+
+    const fScore = r.feasibility_score ?? '—';
+    const nScore = r.network_value_score ?? '—';
+    const verdict = r.verdict || r.overall_verdict || 'No verdict';
+    const violations = r.violations || [];
+    const warnings   = r.warnings   || [];
+    const risks      = r.risks      || [];
+    const alts       = r.alternatives || [];
+
+    box.innerHTML = `
+      <div class="score-row">
+        <div class="score-box"><div class="score-val">${fScore}</div><div class="score-lbl">Feasibility</div></div>
+        <div class="score-box"><div class="score-val">${nScore}</div><div class="score-lbl">Network Value</div></div>
+      </div>
+      <div class="verdict">${escHtml(verdict)}</div>
+      ${violations.length ? `<div class="tag-list">${violations.map(v => `<span class="tag violation">✕ ${escHtml(String(v))}</span>`).join('')}</div>` : ''}
+      ${warnings.length   ? `<div class="tag-list">${warnings.map(w => `<span class="tag warning">⚠ ${escHtml(String(w))}</span>`).join('')}</div>` : ''}
+      ${risks.length      ? `<div style="margin-top:10px;font-size:0.82rem;color:#718096"><strong>Risks:</strong> ${risks.slice(0,3).map(x=>escHtml(String(x))).join(' · ')}</div>` : ''}
+      ${alts.length       ? `<div style="margin-top:6px;font-size:0.82rem;color:#718096"><strong>Alternatives:</strong> ${alts.slice(0,2).map(x=>escHtml(String(x))).join(' · ')}</div>` : ''}
+    `;
+  } catch(e) {
+    box.innerHTML = `<p style="color:#fc8181">Error: ${e.message}</p>`;
+  }
+}
+
+document.getElementById('q-input').addEventListener('keydown', e => { if (e.key === 'Enter') askQuery(); });
+loadStatus();
+</script>
+</body>
+</html>

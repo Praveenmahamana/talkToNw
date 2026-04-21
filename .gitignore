@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env.local
+
+# Environment / secrets  ← NEVER commit credentials
+.env
+*.json
+*service_account*
+*credentials*
+
+# Database files (large binaries)
+*.duckdb
+*.duckdb.wal
+data/output/
+
+# Schedule data (large binary/text files)
+data/schedules/
+*.ssim
+*.SSIM
+
+# Workset data (large simulation output)
+WORKSET12265/
+
+# Logs
+logs/
+*.log
+*.log.err
+
+# Test cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

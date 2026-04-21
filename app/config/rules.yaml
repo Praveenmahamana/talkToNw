@@ -1,0 +1,175 @@
+# ============================================================
+# Airline Schedule Intelligence — Rule Engine Configuration
+# ============================================================
+
+turnaround:
+  minimum_minutes:
+    default: 45
+    narrow_body: 45
+    wide_body: 90
+    regional: 30
+    # Aircraft type overrides
+    A320: 45
+    A321: 45
+    A319: 45
+    A318: 40
+    B737: 45
+    B738: 45
+    B739: 45
+    B736: 45
+    B777: 90
+    B772: 90
+    B773: 90
+    B787: 90
+    B788: 90
+    B789: 90
+    A330: 90
+    A332: 90
+    A333: 90
+    A340: 90
+    A350: 90
+    A359: 90
+    A380: 120
+    B747: 120
+    B744: 120
+    B748: 120
+    E190: 35
+    E195: 35
+    E175: 30
+    E170: 30
+    CRJ9: 30
+    CRJ7: 30
+    AT72: 30
+    AT75: 30
+  # Wide-body aircraft type codes (partial match used)
+  wide_body_codes: ["B77", "B78", "A33", "A34", "A35", "A38", "B74", "B76"]
+  # Regional aircraft type codes
+  regional_codes: ["E17", "E19", "CRJ", "AT7", "DH8", "SF3"]
+
+curfew:
+  airports:
+    LHR:
+      start: "23:00"
+      end: "06:00"
+      timezone: "Europe/London"
+    FRA:
+      start: "23:00"
+      end: "05:00"
+      timezone: "Europe/Berlin"
+    AMS:
+      start: "23:00"
+      end: "06:00"
+      timezone: "Europe/Amsterdam"
+    CDG:
+      start: "00:00"
+      end: "05:00"
+      timezone: "Europe/Paris"
+    MUC:
+      start: "22:00"
+      end: "06:00"
+      timezone: "Europe/Berlin"
+    ZRH:
+      start: "23:00"
+      end: "06:00"
+      timezone: "Europe/Zurich"
+    BRU:
+      start: "23:00"
+      end: "06:00"
+      timezone: "Europe/Brussels"
+    VIE:
+      start: "23:30"
+      end: "06:00"
+      timezone: "Europe/Vienna"
+    GVA:
+      start: "23:00"
+      end: "06:00"
+      timezone: "Europe/Zurich"
+    ARN:
+      start: "23:00"
+      end: "06:00"
+      timezone: "Europe/Stockholm"
+    HEL:
+      start: "23:00"
+      end: "06:00"
+      timezone: "Europe/Helsinki"
+    OSL:
+      start: "23:00"
+      end: "06:00"
+      timezone: "Europe/Oslo"
+    CPH:
+      start: "23:00"
+      end: "06:00"
+      timezone: "Europe/Copenhagen"
+
+spacing:
+  minimum_minutes_same_route: 60       # Min gap between same O&D pair
+  minimum_minutes_same_airport: 15     # Min gap between any two departures from same airport/airline
+  prefer_minutes_same_route: 90        # Preferred gap (for warning)
+
+connectivity:
+  minimum_connection_minutes: 45
+  maximum_connection_minutes: 240
+  minimum_connection_minutes_international: 60
+  minimum_connection_minutes_domestic: 30
+  # Airports with extended MCT
+  extended_mct:
+    LHR: 90
+    JFK: 75
+    CDG: 70
+    FRA: 60
+
+utilization:
+  maximum_daily_block_hours: 16
+  maximum_daily_flights: 8
+  minimum_utilization_percent: 40
+  maximum_utilization_percent: 95
+
+hub_banks:
+  DXB:
+    banks:
+      - name: "early_morning"
+        arrival_window: ["02:00", "07:30"]
+        departure_window: ["07:30", "10:00"]
+      - name: "midday"
+        arrival_window: ["10:00", "14:00"]
+        departure_window: ["14:00", "17:00"]
+      - name: "evening"
+        arrival_window: ["19:00", "23:59"]
+        departure_window: ["00:00", "02:00"]
+  AMS:
+    banks:
+      - name: "morning"
+        arrival_window: ["06:00", "09:00"]
+        departure_window: ["09:00", "12:00"]
+      - name: "afternoon"
+        arrival_window: ["13:00", "16:00"]
+        departure_window: ["16:00", "19:00"]
+  FRA:
+    banks:
+      - name: "morning"
+        arrival_window: ["06:00", "09:30"]
+        departure_window: ["09:30", "12:00"]
+      - name: "afternoon"
+        arrival_window: ["13:00", "16:00"]
+        departure_window: ["16:00", "19:00"]
+      - name: "evening"
+        arrival_window: ["18:00", "21:00"]
+        departure_window: ["21:00", "23:00"]
+
+scoring:
+  weights:
+    connectivity: 0.30
+    spacing: 0.20
+    turnaround: 0.20
+    curfew: 0.15
+    utilization: 0.15
+  penalties:
+    curfew_violation: 50
+    turnaround_violation: 40
+    aircraft_overlap: 60
+    spacing_too_close: 20
+    poor_bank_alignment: 15
+  thresholds:
+    high_confidence: 80
+    medium_confidence: 60
+    low_confidence: 40
