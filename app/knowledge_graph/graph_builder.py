@@ -70,12 +70,15 @@ def _build_graph() -> Optional[nx.MultiDiGraph]:
     """
     Build the property graph from DuckDB.
     Returns a fully annotated MultiDiGraph or None on failure.
+
+    Uses a fresh read-only DuckDB connection so this function is safe to call
+    from background threads without interfering with the main server connection.
     """
+    # DuckDB cursors are thread-safe and share the same underlying connection
     from app.database.db import get_connection
+    conn = get_connection().cursor()
 
     try:
-        conn = get_connection()
-
         # ── 1. Load per-airline route aggregates ─────────────────────────────
         rows = conn.execute("""
             SELECT

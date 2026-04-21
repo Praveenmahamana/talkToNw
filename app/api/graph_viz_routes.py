@@ -31,6 +31,13 @@ from loguru import logger
 
 router = APIRouter(prefix="/graph", tags=["Graph Visualization"])
 
+# Community palette — vivid colours for dark canvas, 15 distinct slots
+_COMM_COLORS = [
+    "#60a5fa","#f87171","#34d399","#fbbf24","#a78bfa",
+    "#f472b6","#2dd4bf","#fb923c","#38bdf8","#a3e635",
+    "#818cf8","#f9a8d4","#6ee7b7","#fcd34d","#c4b5fd",
+]
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -348,3 +355,100 @@ async def sparql_endpoint(
     except Exception as exc:
         logger.error(f"SPARQL endpoint error: {exc}")
         return JSONResponse(status_code=500, content={"error": str(exc)})
+
+
+@router.get("/overview")
+async def graph_overview(
+    max_nodes: int = Query(2000, ge=20, le=5000, description="Max airports to include (default=all)"),
+):
+    """
+    Return the full 'brain' overview graph: ALL airports ranked by PageRank
+    with ALL edges between them. Nodes coloured by community cluster.
+    Supports animated streaming: frontend loads nodes first, then edges.
+    """
+    from app.knowledge_graph.graph_builder import get_graph, is_ready
+    from app.knowledge_graph.graph_analytics import get_analytics_cache, is_analytics_ready
+    from app.services.workset_service import AIRPORT_INFO
+
+    if not is_ready():
+        return JSONResponse(status_code=503, content={"error": "Knowledge graph not ready."})
+    if not is_analytics_ready():
+        return JSONResponse(status_code=503, content={"error": "Graph analytics not ready."})
+
+    G        = get_graph()
+    cache    = get_analytics_cache()
+    pagerank = cache["pagerank"]
+    between  = cache["betweenness"]
+    ap_comm  = cache["airport_community"]
+
+    # ALL airports sorted by pagerank (not limited to cache top-N list)
+    pr_max    = max(pagerank.values()) if pagerank else 1.0
+    all_sorted = sorted(pagerank.items(), key=lambda x: x[1], reverse=True)[:max_nodes]
+    top_codes  = {ap for ap, _ in all_sorted}
+
+    # Build nodes
+    nodes: List[Dict] = []
+    for ap, pr_score in all_sorted:
+        if ap not in G:
+            continue
+        gnode    = G.nodes[ap]
+        comm_id  = ap_comm.get(ap, 0)
+        # Node size 8–48 px proportional to pagerank
+        size = max(8, min(48, int(8 + pr_score * 0.40)))
+        info = AIRPORT_INFO.get(ap, {})
+        nodes.append({"data": {
+            "id":                ap,
+            "code":              ap,
+            "label":             ap,
+            "city":              info.get("city", ap),
+            "country":           info.get("country", ""),
+            "hub_tier":          gnode.get("hub_tier", "Point-to-point"),
+            "community_id":      comm_id,
+            "comm_color":        _COMM_COLORS[comm_id % len(_COMM_COLORS)],
+            "pagerank_score":    round(pr_score, 1),
+            "betweenness_score": round(between.get(ap, 0.0), 1),
+            "dest_count":        int(gnode.get("dest_count", 0)),
+            "out_freq":          int(gnode.get("out_freq", 0)),
+            "size":              size,
+        }})
+
+    # Build ALL edges between included airports (deduplicated bidirectional)
+    edges: List[Dict] = []
+    seen_pairs: set = set()
+    freq_max = 1
+    for u, v, data in G.edges(data=True):
+        if u not in top_codes or v not in top_codes:
+            continue
+        pair = (min(u, v), max(u, v))
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        freq = int(data.get("unique_flights", 0))
+        if freq > freq_max:
+            freq_max = freq
+        edges.append({"data": {
+            "id":             f"{u}--{v}",
+            "source":         u,
+            "target":         v,
+            "weekly_flights": freq,
+        }})
+
+    # Normalise edge weight to 0.5–5 visual thickness
+    for e in edges:
+        freq = e["data"]["weekly_flights"]
+        e["data"]["weight"] = round(0.5 + (freq / freq_max) * 4.5, 2)
+
+    # Sort edges heaviest first (frontend streams them in this order so
+    # important connections appear before minor ones)
+    edges.sort(key=lambda e: e["data"]["weekly_flights"], reverse=True)
+
+    return {
+        "elements": {"nodes": nodes, "edges": edges},
+        "stats": {
+            "nodes":           len(nodes),
+            "edges":           len(edges),
+            "total_airports":  cache["total_airports"],
+            "total_routes":    cache["total_routes"],
+            "community_count": len(set(ap_comm.values())),
+        },
+    }

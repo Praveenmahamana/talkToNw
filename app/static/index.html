@@ -237,6 +237,79 @@
 
     footer { text-align: center; color: #cbd5e0; font-size: 0.75rem; padding: 24px; }
 
+    /* ── Workspace Layout (Chat + Brain side-by-side) ── */
+    .workspace {
+      display: flex; gap: 20px; align-items: flex-start; margin-bottom: 20px;
+    }
+    .chat-col { flex: 1; min-width: 0; }
+    .brain-col {
+      width: 420px; flex-shrink: 0;
+      position: sticky; top: 20px;
+      max-height: calc(100vh - 112px);
+    }
+
+    /* ── Brain Panel (always-on KG) ── */
+    .brain-panel {
+      background: #0d1117; border: 1px solid #21262d; border-radius: 12px;
+      overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,.25);
+      display: flex; flex-direction: column;
+      height: calc(100vh - 132px); min-height: 520px;
+    }
+    .brain-panel-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 14px; background: #161b22; border-bottom: 1px solid #21262d;
+      flex-shrink: 0;
+    }
+    .brain-panel-header h2 {
+      font-size: .69rem; color: #8b949e; letter-spacing: .06em; text-transform: uppercase;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .brain-pulse {
+      width: 8px; height: 8px; border-radius: 50%; background: #238636;
+      animation: bpulse 2.4s ease-in-out infinite;
+    }
+    @keyframes bpulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+    .brain-header-btns { display: flex; gap: 6px; }
+    .brain-btn {
+      background: #21262d; border: 1px solid #30363d; border-radius: 5px;
+      color: #8b949e; font-size: 0.68rem; padding: 3px 8px; cursor: pointer;
+    }
+    .brain-btn:hover { background: #30363d; color: #c9d1d9; }
+    .brain-status {
+      padding: 5px 12px; background: #161b22; border-bottom: 1px solid #21262d;
+      font-size: 0.67rem; color: #8b949e; min-height: 26px;
+      display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex-shrink: 0;
+    }
+    .brain-hl-tag {
+      display: inline-flex; align-items: center; gap: 3px;
+      background: #1f2d1a; border: 1px solid #2ea043; border-radius: 10px;
+      padding: 1px 7px; font-size: 0.66rem; color: #3fb950; font-weight: 600;
+      animation: fadeIn .3s ease;
+    }
+    .brain-hl-dim {
+      display: inline-flex; align-items: center; gap: 3px;
+      background: #1c1a14; border: 1px solid #6e5a00; border-radius: 10px;
+      padding: 1px 7px; font-size: 0.66rem; color: #e3b341;
+    }
+    #brain-cy { flex: 1; background: #0d1117; min-height: 0; }
+    .brain-footer {
+      padding: 6px 12px; background: #161b22; border-top: 1px solid #21262d;
+      font-size: 0.67rem; color: #8b949e;
+      display: flex; justify-content: space-between; align-items: center;
+      flex-shrink: 0;
+    }
+    .brain-comm-dots {
+      display: flex; gap: 4px; flex-wrap: wrap; max-width: 200px;
+    }
+    .brain-comm-dot {
+      width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+      title: '';
+    }
+    @keyframes fadeIn { from{opacity:0} to{opacity:1} }
+
+    /* ── Analysis panel inside chat-col fills full width ── */
+    #analysis-panel { width: 100%; }
+
     /* ── Network Graph Panel ── */
     .graph-panel {
       background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
@@ -331,8 +404,11 @@
 </header>
 
 <main>
-  <!-- Chat -->
-  <div class="query-card">
+  <div class="workspace">
+    <!-- LEFT: Chat + Analysis -->
+    <div class="chat-col">
+      <!-- Chat -->
+      <div class="query-card">
     <div class="chat-header">
       <h2>💬 Talk to Network</h2>
       <div class="chat-header-right">
@@ -356,9 +432,32 @@
       <button class="analysis-clear-btn" onclick="clearAnalysis()">✕ Clear</button>
     </div>
     <div id="analysis-content"></div>
-  </div>
+    </div><!-- /analysis-panel -->
 
-  <!-- Simulation -->
+    </div><!-- /chat-col -->
+
+    <!-- RIGHT: Brain Graph (always-on full KG) -->
+    <div class="brain-col">
+      <div class="brain-panel">
+        <div class="brain-panel-header">
+          <h2><span class="brain-pulse" id="brain-pulse"></span>🧠 Network Brain</h2>
+          <div class="brain-header-btns">
+            <button class="brain-btn" onclick="clearBrainHighlight()" title="Clear highlights">⊗ Clear</button>
+            <button class="brain-btn" onclick="fitBrainGraph()" title="Fit graph">⤢ Fit</button>
+          </div>
+        </div>
+        <div class="brain-status" id="brain-status">
+          <span id="brain-status-text">Loading brain graph…</span>
+        </div>
+        <div id="brain-cy"></div>
+        <div class="brain-footer">
+          <div class="brain-comm-dots" id="brain-comm-dots" title="Community clusters"></div>
+          <span id="brain-footer-stats" style="color:#484f58">—</span>
+        </div>
+      </div>
+    </div><!-- /brain-col -->
+
+  </div><!-- /workspace -->
   <div class="sim-panel">
     <h2>🔬 Simulate Add Flight</h2>
     <div class="sim-form">
@@ -463,6 +562,7 @@ function newThread() {
   thread.classList.add('empty');
   document.getElementById('session-badge').textContent = 'New session';
   clearAnalysis();
+  clearBrainHighlight();
   document.getElementById('q-input').focus();
 }
 
@@ -544,6 +644,10 @@ async function askQuery() {
       confidence: r.confidence,
       time: r.response_time,
     });
+
+    // Highlight query-relevant nodes in the Brain graph
+    const codes = extractCodesFromResponse(r);
+    if (codes.length > 0) highlightQuery(codes);
 
     // Render visualizations in the full-width analysis panel
     if (r.visualizations && r.visualizations.length) {
@@ -1120,7 +1224,321 @@ function fitGraph() {
   if (_cy) _cy.fit(undefined, 20);
 }
 
+// ── Brain Graph (always-on Network Knowledge Graph) ─────────────────────────
+let _brainCy    = null;
+let _brainNodes = new Set();   // set of all airport codes in the brain
+
+const BRAIN_COMM_COLORS = [
+  '#60a5fa','#f87171','#34d399','#fbbf24','#a78bfa',
+  '#f472b6','#2dd4bf','#fb923c','#38bdf8','#a3e635',
+  '#818cf8','#f9a8d4','#6ee7b7','#fcd34d','#c4b5fd',
+];
+
+/* ── helper: stream cytoscape elements in batches ───────────────────────── */
+async function _streamIn(elements, className, batchSize, delayMs, onProgress) {
+  for (let i = 0; i < elements.length; i += batchSize) {
+    const batch = elements.slice(i, i + batchSize);
+    _brainCy.add(batch);
+    // Make freshly-added elements use the 'visible' class so opacity rules apply
+    const ids = batch.map(e => `[id="${e.data.id}"]`).join(',');
+    _brainCy.elements(ids).addClass(className);
+    if (onProgress) onProgress(Math.min(i + batchSize, elements.length), elements.length);
+    await new Promise(r => setTimeout(r, delayMs));
+  }
+}
+
+function initBrainCy() {
+  if (_brainCy) { _brainCy.destroy(); _brainCy = null; }
+  _brainCy = cytoscape({
+    container: document.getElementById('brain-cy'),
+    elements:  [],
+    style: [
+      /* base node — invisible until 'visible' class added */
+      {
+        selector: 'node',
+        style: {
+          'label':                'data(code)',
+          'background-color':     'data(comm_color)',
+          'width':                'data(size)',
+          'height':               'data(size)',
+          'font-size':            7,
+          'color':                '#8b949e',
+          'text-valign':          'bottom',
+          'text-margin-y':        3,
+          'border-width':         0,
+          'text-outline-width':   1,
+          'text-outline-color':   '#0d1117',
+          'min-zoomed-font-size': 5,
+          'opacity':              0,
+        }
+      },
+      /* base edge — invisible until 'visible' class added */
+      {
+        selector: 'edge',
+        style: {
+          'width':           'data(weight)',
+          'line-color':      '#38bdf8',   /* bright sky-blue: clearly visible */
+          'curve-style':     'haystack',
+          'haystack-radius': 0,
+          'opacity':         0,
+        }
+      },
+      /* animated-in states */
+      { selector: 'node.visible', style: { 'opacity': 0.88 } },
+      { selector: 'edge.visible', style: { 'opacity': 0.58 } },
+      /* query highlight */
+      {
+        selector: 'node.hl',
+        style: {
+          'background-color':   '#f97316',
+          'border-width':       3,
+          'border-color':       '#ff6b00',
+          'opacity':            1,
+          'color':              '#fff',
+          'font-size':          11,
+          'font-weight':        'bold',
+          'text-outline-color': '#7c2d12',
+          'z-index':            9999,
+          'shadow-blur':        22,
+          'shadow-color':       '#f97316',
+          'shadow-opacity':     0.85,
+          'shadow-offset-x':    0,
+          'shadow-offset-y':    0,
+        }
+      },
+      { selector: 'node.dim',    style: { 'opacity': 0.06, 'color': 'transparent' } },
+      {
+        selector: 'edge.hl-edge',
+        style: {
+          'line-color': '#f97316',
+          'width':       3,
+          'opacity':     0.90,
+          'z-index':     9998,
+        }
+      },
+      { selector: 'edge.dim', style: { 'opacity': 0.02 } },
+    ],
+    layout:  { name: 'preset' },
+    minZoom: 0.04,
+    maxZoom: 6,
+  });
+
+  _brainCy.on('tap', 'node', evt => {
+    const d = evt.target.data();
+    const st = document.getElementById('brain-status');
+    st.innerHTML = `
+      <span style="color:#c9d1d9;font-weight:600">${d.code}</span>
+      <span>${d.city || ''} · ${d.country || ''}</span>
+      <span class="brain-hl-tag">Tier: ${d.hub_tier || '—'}</span>
+      <span class="brain-hl-dim">PR: ${d.pagerank_score ?? '—'}</span>
+      <span class="brain-hl-dim">BC: ${d.betweenness_score ?? '—'}</span>
+      <span class="brain-hl-dim">Dests: ${d.dest_count ?? '—'}</span>
+    `;
+  });
+  _brainCy.on('tap', evt => {
+    if (evt.target === _brainCy) clearBrainHighlight();
+  });
+}
+
+async function loadBrainGraph() {
+  const pulse      = document.getElementById('brain-pulse');
+  const statusText = document.getElementById('brain-status-text');
+  const statusEl   = document.getElementById('brain-status');
+  if (pulse) pulse.style.background = '#e3b341';
+  if (statusText) statusText.textContent = 'Waiting for graph analytics…';
+
+  // Poll until KG analytics layer is ready (built ~6-50s after startup)
+  for (let i = 0; i < 40; i++) {
+    try {
+      const s = await fetch(`${BASE}/api/v1/graph/status`).then(r => r.json());
+      if (s.analytics && s.analytics.ready) break;
+    } catch {}
+    await new Promise(r => setTimeout(r, 2500));
+    if (statusText) statusText.textContent = `Building graph… (${Math.round((i + 1) * 2.5)}s)`;
+  }
+
+  try {
+    if (statusText) statusText.textContent = 'Fetching full network…';
+
+    const data = await fetch(`${BASE}/api/v1/graph/overview`).then(r => r.json());
+    if (data.error) { if (statusText) statusText.textContent = '⚠ ' + data.error; return; }
+
+    const nodeElems = (data.elements.nodes || []).map(n => ({ group: 'nodes', data: n.data }));
+    const edgeElems = (data.elements.edges || []).map(e => ({ group: 'edges', data: e.data }));
+    _brainNodes = new Set(nodeElems.map(n => n.data.id));
+    const stats = data.stats || {};
+
+    /* ── Phase 1: initialise empty canvas ───────────────────────────────── */
+    initBrainCy();
+
+    /* ── Phase 2: stream nodes in batches with progress bar ─────────────── */
+    const nodeBatch = Math.max(8, Math.ceil(nodeElems.length / 35));
+    await _streamIn(nodeElems, 'visible', nodeBatch, 16,
+      (done, total) => {
+        if (statusText) statusText.textContent = `Loading airports… ${done} / ${total}`;
+      }
+    );
+
+    /* ── Phase 3: cose layout — positions all nodes ──────────────────────── */
+    if (statusText) statusText.textContent = `Positioning ${nodeElems.length} nodes…`;
+    await new Promise(resolve => {
+      const layout = _brainCy.layout({
+        name:              'cose',
+        animate:           true,
+        animationDuration: 800,
+        nodeRepulsion:     () => 4800,
+        idealEdgeLength:   () => 65,
+        edgeElasticity:    () => 30,
+        gravity:           1.5,
+        numIter:           500,
+        initialTemp:       150,
+        coolingFactor:     0.94,
+        minTemp:           1.0,
+        randomize:         true,
+        stop:              resolve,
+      });
+      layout.run();
+    });
+
+    /* ── Phase 4: stream edges in batches (heaviest connections first) ───── */
+    if (statusText) statusText.textContent = `Wiring ${edgeElems.length} connections…`;
+    const edgeBatch = Math.max(4, Math.ceil(edgeElems.length / 55));
+    await _streamIn(edgeElems, 'visible', edgeBatch, 20,
+      (done, total) => {
+        if (statusText) statusText.textContent = `Wiring connections… ${done} / ${total}`;
+      }
+    );
+
+    /* ── Phase 5: done ───────────────────────────────────────────────────── */
+    statusEl.innerHTML = `<span id="brain-status-text" style="color:#3fb950">
+      ✓ ${nodeElems.length} airports &nbsp;·&nbsp; ${edgeElems.length} connections &nbsp;·&nbsp; ${stats.community_count || 0} clusters
+    </span>`;
+    document.getElementById('brain-footer-stats').textContent =
+      `${nodeElems.length} nodes · ${edgeElems.length} edges`;
+
+    const dotsEl = document.getElementById('brain-comm-dots');
+    if (dotsEl) {
+      dotsEl.innerHTML = '';
+      BRAIN_COMM_COLORS.forEach((c, i) => {
+        const dot = document.createElement('div');
+        dot.className = 'brain-comm-dot';
+        dot.style.background = c;
+        dot.title = `Community ${i + 1}`;
+        dotsEl.appendChild(dot);
+      });
+    }
+
+    if (pulse) pulse.style.background = '#238636';
+    _brainCy.fit(undefined, 24);
+
+  } catch (e) {
+    if (statusText) statusText.textContent = '⚠ Load failed: ' + e.message;
+    if (pulse) pulse.style.background = '#da3633';
+    console.error('Brain load error:', e);
+  }
+}
+
+function highlightQuery(codes) {
+  if (!_brainCy || !codes || codes.length === 0) return;
+
+  const matched = codes.filter(c => _brainNodes.has(c));
+  if (matched.length === 0) return;
+  const matchedSet = new Set(matched);
+
+  _brainCy.batch(() => {
+    _brainCy.elements().removeClass('hl dim hl-edge');
+    // Dim everything (nodes + edges), keeping 'visible' for opacity base
+    _brainCy.nodes().addClass('dim');
+    _brainCy.edges().addClass('dim');
+
+    // Highlight matched nodes
+    const hlNodes = _brainCy.nodes().filter(n => matchedSet.has(n.id()));
+    hlNodes.removeClass('dim').addClass('hl');
+
+    // Highlight edges where both endpoints are matched
+    const hlEdges = _brainCy.edges().filter(e =>
+      matchedSet.has(e.data('source')) && matchedSet.has(e.data('target'))
+    );
+    hlEdges.removeClass('dim').addClass('hl-edge');
+
+    // Partially un-dim edges touching at least one highlighted node
+    _brainCy.edges().filter(e =>
+      matchedSet.has(e.data('source')) || matchedSet.has(e.data('target'))
+    ).removeClass('dim').addClass('visible');
+  });
+
+  const hlNodes = _brainCy.nodes('.hl');
+  if (hlNodes.length > 0) {
+    _brainCy.animate({ fit: { eles: hlNodes, padding: 60 } }, { duration: 500 });
+  }
+
+  const statusEl = document.getElementById('brain-status');
+  statusEl.innerHTML = matched.map(c => `<span class="brain-hl-tag">✦ ${c}</span>`).join(' ')
+    + `<span class="brain-hl-dim" style="margin-left:4px">${matched.length}/${codes.length} in graph</span>`;
+}
+
+function clearBrainHighlight() {
+  if (!_brainCy) return;
+  _brainCy.elements().removeClass('hl dim hl-edge');
+  // Ensure all elements remain visible after clearing highlight
+  _brainCy.nodes().addClass('visible');
+  _brainCy.edges().addClass('visible');
+  const statsText = document.getElementById('brain-footer-stats')?.textContent || '';
+  document.getElementById('brain-status').innerHTML =
+    `<span id="brain-status-text">Full network · ${statsText}</span>`;
+}
+
+function fitBrainGraph() {
+  if (_brainCy) _brainCy.fit(undefined, 20);
+}
+
+// Extract IATA codes from a query response (answer text + tool_results)
+function extractCodesFromResponse(r) {
+  const codes = new Set();
+  const answer = r.answer || '';
+
+  // 3-letter uppercase sequences from answer text
+  const re = /\b([A-Z]{3})\b/g;
+  let m;
+  while ((m = re.exec(answer)) !== null) {
+    if (_brainNodes.has(m[1])) codes.add(m[1]);
+  }
+
+  // From tool_results fields
+  const strFields = ['origin','destination','airport','origin_city','dest_city'];
+  for (const tr of (r.tool_results || [])) {
+    for (const f of strFields) {
+      const v = tr[f];
+      if (typeof v === 'string' && v.length === 3 && _brainNodes.has(v.toUpperCase()))
+        codes.add(v.toUpperCase());
+    }
+    // Paths from find_path tool
+    for (const path of (tr.paths || [])) {
+      for (const code of (path.path || [])) {
+        if (_brainNodes.has(code)) codes.add(code);
+      }
+    }
+    // Route string like "DXB-BOM"
+    const route = tr.route || '';
+    for (const part of route.split('-')) {
+      const p = part.trim().toUpperCase();
+      if (p.length === 3 && _brainNodes.has(p)) codes.add(p);
+    }
+    // top_by_pagerank airports
+    for (const entry of (tr.top_by_pagerank || [])) {
+      if (entry.airport && _brainNodes.has(entry.airport)) codes.add(entry.airport);
+    }
+    // community_peers
+    for (const peer of (tr.community_peers || [])) {
+      if (peer.code && _brainNodes.has(peer.code)) codes.add(peer.code);
+    }
+  }
+
+  return [...codes];
+}
+
 loadStatus();
+loadBrainGraph();
 </script>
 </body>
 </html>

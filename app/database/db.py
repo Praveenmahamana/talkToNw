@@ -11,6 +11,11 @@ _connection: Optional[duckdb.DuckDBPyConnection] = None
 _DB_PATH: str = ":memory:"
 
 
+def get_db_path() -> str:
+    """Return the configured database path."""
+    return _DB_PATH
+
+
 def configure_db(path: str = ":memory:") -> None:
     """Set the database path before first use."""
     global _DB_PATH
