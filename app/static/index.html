@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -1235,6 +1235,25 @@ const BRAIN_COMM_COLORS = [
   '#b84040','#60a5fa','#f87171','#34d399','#a78bfa',
 ];
 
+// Entity-type → node fill color (null = use community warm palette)
+const BRAIN_ENTITY_COLORS = {
+  Airport:      null,
+  Carrier:      '#f472b6',
+  AircraftType: '#a78bfa',
+  Alliance:     '#60a5fa',
+};
+
+// Relation → edge stroke color
+const BRAIN_RELATION_COLORS = {
+  connects:        '#7dd3fc',
+  hubs_at:         '#fb923c',
+  uses_aircraft:   '#a78bfa',
+  operated_by:     '#f472b6',
+  codeshares_with: '#fbbf24',
+  member_of:       '#e879f9',
+  default:         '#94a3b8',
+};
+
 let _brainCanvas    = null;
 let _brainCtx       = null;
 let _brainRaf       = null;
@@ -1251,8 +1270,17 @@ let _brainPanStart  = null;
 function _brainCommColor(community) {
   return BRAIN_COMM_COLORS[(community || 0) % BRAIN_COMM_COLORS.length];
 }
-function _brainRadius(_node) {
-  return 6;   // uniform size for all nodes
+function _brainNodeColor(node) {
+  if (BRAIN_ENTITY_COLORS[node.entity_type])
+    return BRAIN_ENTITY_COLORS[node.entity_type];
+  return _brainCommColor(node.community);
+}
+function _brainRadius(node) {
+  // Reference: 5 + sqrt(degree) * 2.5 — degree-based sizing gives brain-like scale
+  if (node.entity_type === 'Carrier')      return 10;
+  if (node.entity_type === 'AircraftType') return 8;
+  const deg = node.degree || node.dest_count || 0;
+  return Math.max(4, Math.min(14, 4 + Math.sqrt(deg) * 1.4));
 }
 
 function _drawBrainBg(ctx, W, H, tf) {
@@ -1277,9 +1305,9 @@ function _brainFrame() {
   const nodeArr = Array.from(_brainNodeMap.values());
   const hasHL = _brainHL.size > 0;
 
-  // Per-frame opacity fade-in: +0.04/frame at 60fps = ~300ms full fade per element
-  nodeArr.forEach(n => { if(n.opacity < 1) n.opacity = Math.min(1, n.opacity + 0.04); });
-  _brainEdgeArr.forEach(e => { if(e.opacity < 1) e.opacity = Math.min(1, e.opacity + 0.04); });
+  // Per-frame opacity fade-in: +0.05/frame at 60fps ≈ 300ms full fade (matches reference)
+  nodeArr.forEach(n => { if(n.opacity < 1) n.opacity = Math.min(1, n.opacity + 0.05); });
+  _brainEdgeArr.forEach(e => { if(e.opacity < 1) e.opacity = Math.min(1, e.opacity + 0.05); });
 
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   _drawBrainBg(ctx, W, H, tf);
@@ -1294,22 +1322,51 @@ function _brainFrame() {
     const isHL      = hasHL && _brainHL.has(src.id) && _brainHL.has(tgt.id);
     const isPartial = !isHL && hasHL && (_brainHL.has(src.id) || _brainHL.has(tgt.id));
     const dimmed    = hasHL && !isHL && !isPartial;
-    const alpha     = dimmed ? 0.05*e.opacity : (isHL ? 0.95 : isPartial ? 0.65 : 0.72) * e.opacity;
+    const relColor  = BRAIN_RELATION_COLORS[e.relation] || BRAIN_RELATION_COLORS.default;
+    const baseAlpha = e.relation === 'connects' ? 0.55 : 0.80;
+    const alpha     = dimmed ? 0.04*e.opacity : (isHL ? 0.95 : isPartial ? 0.65 : baseAlpha) * e.opacity;
     if (alpha < 0.01) return;
+
+    const x1 = src.x, y1 = src.y, x2 = tgt.x, y2 = tgt.y;
+    const dist = Math.sqrt((x2-x1)**2 + (y2-y1)**2);
+    const ang  = Math.atan2(y2-y1, x2-x1);
+    const lw   = e.relation === 'connects'
+      ? (isHL ? (0.9 + e.weight*0.3)*2 : 0.9 + e.weight*0.3)
+      : (isHL ? 3.0 : 1.8);
+
     ctx.save();
     ctx.globalAlpha = alpha;
-    ctx.strokeStyle = isHL ? '#f97316' : '#7dd3fc';
-    ctx.lineWidth   = isHL ? (1.2 + e.weight*0.4)*2.0 : 1.2 + e.weight*0.4;
+    ctx.strokeStyle = isHL ? '#f97316' : relColor;
+    ctx.lineWidth   = lw;
     ctx.lineCap     = 'round';
-    ctx.beginPath(); ctx.moveTo(src.x, src.y); ctx.lineTo(tgt.x, tgt.y); ctx.stroke();
-    if (isHL) {
-      const ang = Math.atan2(tgt.y-src.y, tgt.x-src.x);
-      ctx.fillStyle = '#f97316';
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+
+    // Arrowhead: always on non-connects edges, on highlight for connects
+    const showArrow = e.relation !== 'connects' || isHL;
+    if (showArrow && dist > 25) {
+      const arrowLen = isHL ? 10 : 7;
+      ctx.fillStyle = isHL ? '#f97316' : relColor;
       ctx.beginPath();
-      ctx.moveTo(tgt.x, tgt.y);
-      ctx.lineTo(tgt.x - 8*Math.cos(ang-Math.PI/6), tgt.y - 8*Math.sin(ang-Math.PI/6));
-      ctx.lineTo(tgt.x - 8*Math.cos(ang+Math.PI/6), tgt.y - 8*Math.sin(ang+Math.PI/6));
+      ctx.moveTo(x2, y2);
+      ctx.lineTo(x2 - arrowLen*Math.cos(ang-Math.PI/6), y2 - arrowLen*Math.sin(ang-Math.PI/6));
+      ctx.lineTo(x2 - arrowLen*Math.cos(ang+Math.PI/6), y2 - arrowLen*Math.sin(ang+Math.PI/6));
       ctx.closePath(); ctx.fill();
+    }
+
+    // Relation label: at midpoint when highlighted OR zoomed in (scale > 1.8) OR non-connects edge
+    const showLabel = (isHL || isPartial || e.relation !== 'connects') && dist > 50 && tf.scale > 0.6;
+    if (showLabel) {
+      const mx = (x1+x2)/2, my = (y1+y2)/2;
+      const text = (e.relation || 'connects').replace(/_/g, ' ');
+      const fs = Math.max(8, Math.min(11, 8 + tf.scale));
+      ctx.font = `${fs}px -apple-system,"Segoe UI",sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      const tw = ctx.measureText(text).width;
+      ctx.globalAlpha = alpha * 0.88;
+      ctx.fillStyle = 'rgba(10,8,6,0.72)';
+      ctx.fillRect(mx - tw/2 - 3, my - fs/2 - 2, tw + 6, fs + 4);
+      ctx.fillStyle = isHL ? '#f97316' : relColor;
+      ctx.fillText(text, mx, my);
     }
     ctx.restore();
   });
@@ -1321,34 +1378,74 @@ function _brainFrame() {
     const dimmed = hasHL && !isHL;
     const isHov  = n.id === _brainHover;
     const r      = _brainRadius(n);
-    const alpha  = dimmed ? 0.08*n.opacity : n.opacity*0.88;
+    const alpha  = dimmed ? 0.07*n.opacity : n.opacity*0.92;
     if (alpha < 0.01) return;
+    const baseColor = isHL ? '#f97316' : _brainNodeColor(n);
     ctx.save();
     ctx.globalAlpha = alpha;
-    ctx.fillStyle = isHL ? '#f97316' : _brainCommColor(n.community);
-    ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, Math.PI*2); ctx.fill();
-    if (isHov && !isHL) {
-      ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.arc(n.x, n.y, r+2.5, 0, Math.PI*2); ctx.stroke();
-    }
-    if (isHL) {
-      ctx.shadowBlur = 20; ctx.shadowColor = '#f97316';
-      ctx.strokeStyle = 'rgba(255,255,255,0.92)'; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(n.x, n.y, r+3, 0, Math.PI*2); ctx.stroke();
-      ctx.shadowBlur = 0;
+
+    // Shape by entity type
+    if (n.entity_type === 'Carrier') {
+      // Diamond
+      ctx.fillStyle = baseColor;
+      ctx.beginPath();
+      ctx.moveTo(n.x,     n.y - r*1.4);
+      ctx.lineTo(n.x + r*1.1, n.y);
+      ctx.lineTo(n.x,     n.y + r*1.4);
+      ctx.lineTo(n.x - r*1.1, n.y);
+      ctx.closePath(); ctx.fill();
+      if (isHov || isHL) {
+        ctx.strokeStyle = isHL ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.55)';
+        ctx.lineWidth = isHL ? 2 : 1.5;
+        if (isHL) { ctx.shadowBlur = 20; ctx.shadowColor = '#f97316'; }
+        ctx.stroke(); ctx.shadowBlur = 0;
+      }
+    } else if (n.entity_type === 'AircraftType') {
+      // Equilateral triangle
+      ctx.fillStyle = baseColor;
+      ctx.beginPath();
+      ctx.moveTo(n.x,         n.y - r*1.3);
+      ctx.lineTo(n.x + r*1.1, n.y + r*0.8);
+      ctx.lineTo(n.x - r*1.1, n.y + r*0.8);
+      ctx.closePath(); ctx.fill();
+      if (isHov || isHL) {
+        ctx.strokeStyle = isHL ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.55)';
+        ctx.lineWidth = isHL ? 2 : 1.5;
+        if (isHL) { ctx.shadowBlur = 18; ctx.shadowColor = '#f97316'; }
+        ctx.stroke(); ctx.shadowBlur = 0;
+      }
+    } else {
+      // Circle (Airport + default)
+      ctx.fillStyle = baseColor;
+      ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, Math.PI*2); ctx.fill();
+      if (isHov && !isHL) {
+        ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(n.x, n.y, r+2.5, 0, Math.PI*2); ctx.stroke();
+      }
+      if (isHL) {
+        ctx.shadowBlur = 20; ctx.shadowColor = '#f97316';
+        ctx.strokeStyle = 'rgba(255,255,255,0.92)'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(n.x, n.y, r+3, 0, Math.PI*2); ctx.stroke();
+        ctx.shadowBlur = 0;
+      }
     }
     ctx.restore();
-    if (isHL || isHov || (n.dest_count||0) > 60) {
-      const fs  = Math.max(9, Math.min(13, 8 + (n.dest_count||0)*0.04));
-      const lbl = n.label, ly = n.y + r + 3;
+
+    // Label: carriers always, airports when highlighted/hovered/mega-hub
+    const isCarrier  = n.entity_type === 'Carrier';
+    const isAircraft = n.entity_type === 'AircraftType';
+    const showLabel  = isHL || isHov || isCarrier || isAircraft || (n.dest_count||0) > 60;
+    if (showLabel && !dimmed) {
+      const fs  = isCarrier ? 10 : Math.max(9, Math.min(13, 8 + (n.dest_count||0)*0.04));
+      const lbl = n.label, ly = n.y + r + 4;
       ctx.save();
-      ctx.font = `${isHL ? '600 ' : ''}${fs}px -apple-system,"Segoe UI",sans-serif`;
+      ctx.font = `${(isHL || isCarrier) ? '600 ' : ''}${fs}px -apple-system,"Segoe UI",sans-serif`;
       ctx.textAlign = 'center'; ctx.textBaseline = 'top';
       const tw = ctx.measureText(lbl).width;
-      ctx.globalAlpha = dimmed ? 0 : n.opacity*0.9;
-      ctx.fillStyle = 'rgba(10,10,16,0.68)';
-      ctx.fillRect(n.x-tw/2-3, ly-1, tw+6, fs+3);
-      ctx.fillStyle = isHL ? '#fff' : _brainCommColor(n.community);
+      ctx.globalAlpha = n.opacity * 0.92;
+      ctx.fillStyle = 'rgba(10,10,16,0.7)';
+      ctx.fillRect(n.x - tw/2 - 3, ly - 1, tw + 6, fs + 3);
+      ctx.fillStyle = isHL ? '#fff' : _brainNodeColor(n);
       ctx.fillText(lbl, n.x, ly);
       ctx.restore();
     }
@@ -1428,12 +1525,29 @@ function _brainNodeAt(cx, cy) {
 }
 
 function _showBrainNodeInfo(node) {
-  document.getElementById('brain-status').innerHTML = `
-    <span style="color:#c9d1d9;font-weight:600">${node.label}</span>
-    <span>${node.city || ''}</span>
-    <span class="brain-hl-tag">Tier: ${node.hub_tier||'—'}</span>
-    <span class="brain-hl-dim">PR: ${node.pagerank||'—'}</span>
-    <span class="brain-hl-dim">Dests: ${node.dest_count||'—'}</span>`;
+  const typeColor = BRAIN_ENTITY_COLORS[node.entity_type] || '#c9d1d9';
+  const typeBadge = `<span style="color:${typeColor};font-weight:700;text-transform:uppercase;font-size:10px">${node.entity_type||'Airport'}</span>`;
+  if (node.entity_type === 'Carrier') {
+    document.getElementById('brain-status').innerHTML = `
+      ${typeBadge}
+      <span style="color:#f472b6;font-weight:600">${node.name||node.label}</span>
+      <span class="brain-hl-tag">${node.carrier_type||'Airline'}</span>
+      <span class="brain-hl-dim">Alliance: ${node.alliance||'None'}</span>
+      <span class="brain-hl-dim">${node.routes||0} routes · ${node.airports_count||0} airports</span>`;
+  } else if (node.entity_type === 'AircraftType') {
+    document.getElementById('brain-status').innerHTML = `
+      ${typeBadge}
+      <span style="color:#a78bfa;font-weight:600">${node.label}</span>
+      <span class="brain-hl-dim">${node.operators||0} operators · ${node.routes||0} routes</span>`;
+  } else {
+    document.getElementById('brain-status').innerHTML = `
+      ${typeBadge}
+      <span style="color:#c9d1d9;font-weight:600">${node.label}</span>
+      <span>${node.city||''}</span>
+      <span class="brain-hl-tag">Tier: ${node.hub_tier||'—'}</span>
+      <span class="brain-hl-dim">PR: ${node.pagerank||'—'}</span>
+      <span class="brain-hl-dim">Dests: ${node.dest_count||'—'}</span>`;
+  }
 }
 
 function _initBrainSim() {
@@ -1441,14 +1555,15 @@ function _initBrainSim() {
   const H = _brainCanvas ? _brainCanvas.offsetHeight : 600;
   if (_brainSim) { _brainSim.stop(); _brainSim = null; }
   _brainSim = d3Force.forceSimulation()
-    .force('charge',    d3Force.forceManyBody().strength(n => -100 - (n.dest_count||0)*1.2))
-    .force('link',      d3Force.forceLink().id(n => n.id).distance(85).strength(0.28))
-    .force('center',    d3Force.forceCenter(W/2, H/2).strength(0.03))
-    .force('collision', d3Force.forceCollide().radius(n => _brainRadius(n)+3).strength(0.55))
+    .force('charge',    d3Force.forceManyBody().strength(n => -180 - (n.degree||n.dest_count||0) * 18))
+    .force('link',      d3Force.forceLink().id(n => n.id).distance(110).strength(0.4))
+    .force('center',    d3Force.forceCenter(W/2, H/2).strength(0.04))
+    .force('collision', d3Force.forceCollide().radius(n => _brainRadius(n) + 4).strength(0.7))
     .force('x',         d3Force.forceX(W/2).strength(0.02))
     .force('y',         d3Force.forceY(H/2).strength(0.02))
-    .alphaDecay(0.022)
-    .velocityDecay(0.45);
+    .alphaTarget(0)
+    .alphaDecay(0.025)
+    .velocityDecay(0.5);
 }
 
 function _fitBrainView() {
@@ -1472,7 +1587,7 @@ async function loadBrainGraph() {
   const statusEl  = document.getElementById('brain-status');
   const statusTxt = document.getElementById('brain-status-text');
   if (pulse) pulse.style.background = '#e3b341';
-  if (statusTxt) statusTxt.textContent = 'Waiting for graph analytics…';
+  if (statusTxt) statusTxt.textContent = 'Waiting for graph analytics\u2026';
 
   for (let i = 0; i < 40; i++) {
     try {
@@ -1480,17 +1595,24 @@ async function loadBrainGraph() {
       if (s.analytics && s.analytics.ready) break;
     } catch {}
     await new Promise(r => setTimeout(r, 2500));
-    if (statusTxt) statusTxt.textContent = `Building graph… (${Math.round((i+1)*2.5)}s)`;
+    if (statusTxt) statusTxt.textContent = `Building graph\u2026 (${Math.round((i+1)*2.5)}s)`;
   }
 
   try {
-    if (statusTxt) statusTxt.textContent = 'Fetching network data…';
+    if (statusTxt) statusTxt.textContent = 'Fetching network data\u2026';
     const data = await fetch(`${BASE}/api/v1/graph/overview`).then(r => r.json());
-    if (data.error) { if (statusTxt) statusTxt.textContent = '⚠ ' + data.error; return; }
+    if (data.error) { if (statusTxt) statusTxt.textContent = '\u26a0 ' + data.error; return; }
 
     const nodeArr = data.elements.nodes || [];
     const edgeArr = data.elements.edges || [];
     const stats   = data.stats || {};
+
+    // Pre-build degree map so nodes are sized correctly from first frame
+    const degreeMap = new Map();
+    edgeArr.forEach(e => {
+      degreeMap.set(e.data.source, (degreeMap.get(e.data.source)||0) + 1);
+      degreeMap.set(e.data.target, (degreeMap.get(e.data.target)||0) + 1);
+    });
 
     _brainNodeMap.clear(); _brainEdgeArr = []; _brainNodes.clear(); _brainHL = new Set();
     _initBrainCanvas();
@@ -1499,159 +1621,109 @@ async function loadBrainGraph() {
 
     const W = _brainCanvas.offsetWidth, H = _brainCanvas.offsetHeight;
 
-    // ── Phase 1: stream nodes in batches, simulation reheats each time ───────
-    const nodeBatch = Math.max(5, Math.ceil(nodeArr.length / 45));
-    for (let i = 0; i < nodeArr.length; i += nodeBatch) {
-      nodeArr.slice(i, i + nodeBatch).forEach(n => {
+    // Sort edges heaviest first so important connections appear early
+    const sortedEdges = [...edgeArr].sort((a,b) => (b.data.weight||0)-(a.data.weight||0));
+    let edgeCursor = 0;
+    const BATCH = Math.max(8, Math.ceil(nodeArr.length / 55));
+    const EDGE_RATIO = Math.max(1, Math.ceil(sortedEdges.length / nodeArr.length));
+
+    // Stream nodes + edges together in each batch (organic growth)
+    for (let i = 0; i < nodeArr.length; i += BATCH) {
+      nodeArr.slice(i, i + BATCH).forEach(n => {
         const nd = {
-          id:          n.data.id,   label:       n.data.code,
-          city:        n.data.city, hub_tier:    n.data.hub_tier,
-          community:   n.data.community_id,      dest_count:  n.data.dest_count,
-          pagerank:    n.data.pagerank_score,     betweenness: n.data.betweenness_score,
-          opacity:     0,
-          x: W/2 + (Math.random()-0.5)*320,
-          y: H/2 + (Math.random()-0.5)*320,
+          id:          n.data.id,
+          label:       n.data.code || n.data.label,
+          entity_type: n.data.entity_type || 'Airport',
+          city:        n.data.city,
+          hub_tier:    n.data.hub_tier,
+          community:   n.data.community_id,
+          dest_count:  n.data.dest_count,
+          degree:      degreeMap.get(n.data.id) || 0,
+          pagerank:    n.data.pagerank_score,
+          betweenness: n.data.betweenness_score,
+          name:           n.data.name,
+          carrier_type:   n.data.carrier_type,
+          alliance:       n.data.alliance,
+          routes:         n.data.routes,
+          airports_count: n.data.airports_count,
+          operators:      n.data.operators,
+          opacity: 0,
+          x: W/2 + (Math.random()-0.5)*180,
+          y: H/2 + (Math.random()-0.5)*180,
           vx: 0, vy: 0, fx: null, fy: null,
         };
         _brainNodeMap.set(nd.id, nd);
-        _brainNodes.add(nd.id);
+        if (nd.entity_type === 'Airport') _brainNodes.add(nd.id);
       });
-      _brainSim.nodes(Array.from(_brainNodeMap.values()));
-      _brainSim.force('link').links(_brainEdgeArr);
-      _brainSim.alpha(Math.max(_brainSim.alpha(), 0.28)).restart();
-      if (statusTxt) statusTxt.textContent =
-        `Loading airports… ${Math.min(i+nodeBatch, nodeArr.length)} / ${nodeArr.length}`;
-      await new Promise(r => setTimeout(r, 16));
-    }
 
-    // ── Phase 2: let simulation partially settle ──────────────────────────────
-    if (statusTxt) statusTxt.textContent = `Simulating ${nodeArr.length} nodes…`;
-    await new Promise(r => setTimeout(r, 1000));
-
-    // ── Phase 3: stream edges, heaviest first ─────────────────────────────────
-    if (statusTxt) statusTxt.textContent = `Wiring ${edgeArr.length} connections…`;
-    const edgeBatch = Math.max(4, Math.ceil(edgeArr.length / 60));
-    for (let i = 0; i < edgeArr.length; i += edgeBatch) {
-      edgeArr.slice(i, i + edgeBatch).forEach(e => {
+      // Add proportional edges in the same batch
+      const edgeEnd = Math.min(edgeCursor + BATCH * EDGE_RATIO, sortedEdges.length);
+      sortedEdges.slice(edgeCursor, edgeEnd).forEach(e => {
         if (_brainNodeMap.has(e.data.source) && _brainNodeMap.has(e.data.target)) {
           _brainEdgeArr.push({
             id: e.data.id, source: e.data.source, target: e.data.target,
-            weight: e.data.weight || 1, opacity: 0,
+            relation: e.data.relation || 'connects', weight: e.data.weight || 1, opacity: 0,
+          });
+        }
+      });
+      edgeCursor = edgeEnd;
+
+      _brainSim.nodes(Array.from(_brainNodeMap.values()));
+      _brainSim.force('link').links(_brainEdgeArr);
+      _brainSim.alpha(Math.max(_brainSim.alpha(), 0.3)).restart();
+
+      if (statusTxt) statusTxt.textContent =
+        `Growing network\u2026 ${Math.min(i+BATCH, nodeArr.length)} nodes \u00b7 ${_brainEdgeArr.length} edges`;
+      await new Promise(r => setTimeout(r, 18));
+    }
+
+    // Wire any remaining edges
+    if (edgeCursor < sortedEdges.length) {
+      sortedEdges.slice(edgeCursor).forEach(e => {
+        if (_brainNodeMap.has(e.data.source) && _brainNodeMap.has(e.data.target)) {
+          _brainEdgeArr.push({
+            id: e.data.id, source: e.data.source, target: e.data.target,
+            relation: e.data.relation || 'connects', weight: e.data.weight || 1, opacity: 0,
           });
         }
       });
       _brainSim.force('link').links(_brainEdgeArr);
-      if (statusTxt) statusTxt.textContent =
-        `Wiring connections… ${Math.min(i+edgeBatch, edgeArr.length)} / ${edgeArr.length}`;
-      await new Promise(r => setTimeout(r, 18));
     }
 
-    // ── Done ──────────────────────────────────────────────────────────────────
+    // Done
     statusEl.innerHTML = `<span id="brain-status-text" style="color:#3fb950">
-      ✓ ${nodeArr.length} airports &nbsp;·&nbsp; ${edgeArr.length} connections &nbsp;·&nbsp; ${stats.community_count||0} clusters
+      \u2713 ${stats.airport_count||nodeArr.length} airports &nbsp;\u00b7&nbsp;
+      ${stats.carrier_count||0} carriers &nbsp;\u00b7&nbsp;
+      ${stats.aircraft_count||0} fleets &nbsp;\u00b7&nbsp;
+      ${edgeArr.length} edges
     </span>`;
     document.getElementById('brain-footer-stats').textContent =
-      `${nodeArr.length} nodes · ${edgeArr.length} edges`;
+      `${nodeArr.length} nodes \u00b7 ${edgeArr.length} edges`;
     const dotsEl = document.getElementById('brain-comm-dots');
     if (dotsEl) {
       dotsEl.innerHTML = '';
-      BRAIN_COMM_COLORS.forEach((c, i) => {
-        const dot = document.createElement('div');
-        dot.className = 'brain-comm-dot'; dot.style.background = c; dot.title = `Community ${i+1}`;
-        dotsEl.appendChild(dot);
+      [['Airport','#7dd3fc','\u25cf'],['Carrier','#f472b6','\u25c6'],['Aircraft','#a78bfa','\u25b2']].forEach(([lbl,c,sym]) => {
+        const el = document.createElement('span');
+        el.style.cssText = `color:${c};font-size:11px;display:flex;align-items:center;gap:3px;margin-right:6px`;
+        el.innerHTML = `<span style="font-size:13px">${sym}</span>${lbl}`;
+        dotsEl.appendChild(el);
+      });
+      [['connects','#7dd3fc'],['hubs_at','#fb923c'],['uses_aircraft','#a78bfa']].forEach(([rel,c]) => {
+        const el = document.createElement('span');
+        el.style.cssText = `color:${c};font-size:10px;display:flex;align-items:center;gap:3px;margin-right:6px;opacity:0.8`;
+        el.innerHTML = `<span style="width:14px;height:2px;background:${c};display:inline-block"></span>${rel.replace('_',' ')}`;
+        dotsEl.appendChild(el);
       });
     }
     if (pulse) pulse.style.background = '#238636';
-    setTimeout(_fitBrainView, 2200);
+    setTimeout(_fitBrainView, 3000);
 
   } catch (e) {
-    if (statusTxt) statusTxt.textContent = '⚠ Load failed: ' + e.message;
+    if (statusTxt) statusTxt.textContent = '\u26a0 Load failed: ' + e.message;
     if (pulse) pulse.style.background = '#da3633';
     console.error('Brain load error:', e);
   }
 }
-
-function highlightQuery(codes) {
-  if (!codes || !codes.length) return;
-  const matched = codes.filter(c => _brainNodes.has(c));
-  if (!matched.length) return;
-  _brainHL = new Set(matched);
-  const hlNodes = matched.map(c => _brainNodeMap.get(c)).filter(Boolean);
-  if (hlNodes.length && _brainCanvas) {
-    setTimeout(() => {
-      let minX=1e9, maxX=-1e9, minY=1e9, maxY=-1e9;
-      hlNodes.forEach(n => {
-        if (n.x==null) return;
-        if(n.x<minX) minX=n.x; if(n.x>maxX) maxX=n.x;
-        if(n.y<minY) minY=n.y; if(n.y>maxY) maxY=n.y;
-      });
-      if (minX === 1e9) return;
-      const dpr = window.devicePixelRatio||1;
-      const W = _brainCanvas.width/dpr, H = _brainCanvas.height/dpr;
-      const scale = Math.min((W-200)/Math.max(maxX-minX,60), (H-200)/Math.max(maxY-minY,60), 4);
-      _brainTransform = { x: W/2-(minX+maxX)/2*scale, y: H/2-(minY+maxY)/2*scale, scale };
-    }, 300);
-  }
-  document.getElementById('brain-status').innerHTML =
-    matched.map(c => `<span class="brain-hl-tag">&#x2726; ${c}</span>`).join(' ') +
-    `<span class="brain-hl-dim" style="margin-left:4px">${matched.length}/${codes.length} in graph</span>`;
-}
-
-function clearBrainHighlight() {
-  _brainHL = new Set();
-  const stats = document.getElementById('brain-footer-stats')?.textContent || '';
-  document.getElementById('brain-status').innerHTML =
-    `<span id="brain-status-text">Full network &nbsp;·&nbsp; ${stats}</span>`;
-}
-
-function fitBrainGraph() { _fitBrainView(); }
-
-// Extract IATA codes from a query response (answer text + tool_results)
-function extractCodesFromResponse(r) {
-  const codes = new Set();
-  const answer = r.answer || '';
-
-  // 3-letter uppercase sequences from answer text
-  const re = /\b([A-Z]{3})\b/g;
-  let m;
-  while ((m = re.exec(answer)) !== null) {
-    if (_brainNodes.has(m[1])) codes.add(m[1]);
-  }
-
-  // From tool_results fields
-  const strFields = ['origin','destination','airport','origin_city','dest_city'];
-  for (const tr of (r.tool_results || [])) {
-    for (const f of strFields) {
-      const v = tr[f];
-      if (typeof v === 'string' && v.length === 3 && _brainNodes.has(v.toUpperCase()))
-        codes.add(v.toUpperCase());
-    }
-    // Paths from find_path tool
-    for (const path of (tr.paths || [])) {
-      for (const code of (path.path || [])) {
-        if (_brainNodes.has(code)) codes.add(code);
-      }
-    }
-    // Route string like "DXB-BOM"
-    const route = tr.route || '';
-    for (const part of route.split('-')) {
-      const p = part.trim().toUpperCase();
-      if (p.length === 3 && _brainNodes.has(p)) codes.add(p);
-    }
-    // top_by_pagerank airports
-    for (const entry of (tr.top_by_pagerank || [])) {
-      if (entry.airport && _brainNodes.has(entry.airport)) codes.add(entry.airport);
-    }
-    // community_peers
-    for (const peer of (tr.community_peers || [])) {
-      if (peer.code && _brainNodes.has(peer.code)) codes.add(peer.code);
-    }
-  }
-
-  return [...codes];
-}
-
-loadStatus();
 loadBrainGraph();
 </script>
 </body>

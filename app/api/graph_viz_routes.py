@@ -359,7 +359,8 @@ async def sparql_endpoint(
 
 @router.get("/overview")
 async def graph_overview(
-    max_nodes: int = Query(2000, ge=20, le=5000, description="Max airports to include (default=all)"),
+    max_nodes: int = Query(2000, ge=20, le=5000, description="Max airports to include"),
+    min_connections: int = Query(5, ge=1, le=50, description="Min route connections for airport inclusion"),
 ):
     """
     Return the full heterogeneous 'brain' overview graph:
@@ -390,12 +391,17 @@ async def graph_overview(
     between  = cache["betweenness"]
     ap_comm  = cache["airport_community"]
 
-    # ── Airport nodes (PageRank-ranked) ───────────────────────────────────────
-    all_sorted = sorted(pagerank.items(), key=lambda x: x[1], reverse=True)[:max_nodes]
-    top_codes  = {ap for ap, _ in all_sorted}
+    # ── Airport nodes (PageRank-ranked, min_connections filter) ──────────────
+    all_sorted = sorted(pagerank.items(), key=lambda x: x[1], reverse=True)
+    # Keep only airports with enough connections (dest_count >= min_connections)
+    filtered = [
+        (ap, pr) for ap, pr in all_sorted
+        if ap in G and G.nodes[ap].get("dest_count", 0) >= min_connections
+    ][:max_nodes]
+    top_codes = {ap for ap, _ in filtered}
 
     nodes: List[Dict] = []
-    for ap, pr_score in all_sorted:
+    for ap, pr_score in filtered:
         if ap not in G:
             continue
         gnode   = G.nodes[ap]
