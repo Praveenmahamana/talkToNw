@@ -72,6 +72,88 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "get_graph_analytics",
+        "description": (
+            "Return graph-algorithm based analytics for an airport or the full network.\n"
+            "  • type='airport' → PageRank rank (network importance), betweenness centrality "
+            "(flow-control score), community ID and peer airports in the same cluster.\n"
+            "  • type='network' → Top-20 airports by PageRank, top-20 by betweenness, "
+            "community summaries (geographic/operational clusters).\n"
+            "PageRank identifies the most important airports by network position (not just size). "
+            "Betweenness centrality identifies airports that are critical connectors for flows. "
+            "Communities reveal natural clusters (Gulf hub group, European hub group, etc.).\n"
+            "Use this when the user asks about network importance, critical connectors, or clustering."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "type": {
+                    "type": "string",
+                    "description": "Query type: 'airport' or 'network'",
+                },
+                "airport": {
+                    "type": "string",
+                    "description": "IATA airport code (required for type='airport'), e.g. DXB",
+                },
+            },
+            "required": ["type"],
+        },
+    },
+    {
+        "name": "find_path",
+        "description": (
+            "Find optimal paths between two airports using graph shortest-path algorithms. "
+            "Returns up to 3 routes: direct (0-stop), 1-stop, and 2-stop paths. "
+            "Each path shows legs with airline, block time, and connecting airports. "
+            "Uses Dijkstra's algorithm weighted by minimum block time.\n"
+            "Use this when asked about routing options, journey time, or best connection paths."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "origin":      {"type": "string", "description": "IATA origin airport, e.g. DXB"},
+                "destination": {"type": "string", "description": "IATA destination airport, e.g. SYD"},
+            },
+            "required": ["origin", "destination"],
+        },
+    },
+    {
+        "name": "semantic_query",
+        "description": (
+            "Run semantic queries against the RDF/OWL triple store (knowledge graph ontology layer). "
+            "Answers questions about airline classifications, alliances, and hub types that "
+            "pure SQL and graph traversal cannot easily answer:\n"
+            "  • type='airlines_on_route' → which airlines (+ FSC/LCC) serve origin→dest directly\n"
+            "  • type='hub_airports'      → all airports of a given tier (Mega-hub / Major hub / etc.)\n"
+            "  • type='alliance'          → members of Star Alliance / oneworld / SkyTeam\n"
+            "  • type='carriers_at_airport' → all airlines (or FSC/LCC only) operating at an airport\n"
+            "  • type='airline_alliance'  → which alliance a specific airline belongs to\n"
+            "  • type='fsc_vs_lcc'        → FSC vs LCC breakdown on a route\n"
+            "Use this for any question involving alliance membership, carrier classification, "
+            "or semantic airport/airline type comparisons."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "type": {
+                    "type": "string",
+                    "description": (
+                        "Query type: 'airlines_on_route' | 'hub_airports' | 'alliance' | "
+                        "'carriers_at_airport' | 'airline_alliance' | 'fsc_vs_lcc'"
+                    ),
+                },
+                "origin":        {"type": "string", "description": "Origin airport (for route queries)"},
+                "destination":   {"type": "string", "description": "Destination airport (for route queries)"},
+                "airport":       {"type": "string", "description": "Airport code (for airport queries)"},
+                "airline":       {"type": "string", "description": "Airline code (for airline queries)"},
+                "alliance":      {"type": "string", "description": "Alliance name: 'Star Alliance', 'oneworld', 'SkyTeam', 'Gulf Trio'"},
+                "tier":          {"type": "string", "description": "Hub tier: 'Mega-hub' | 'Major hub' | 'Secondary hub' | 'Regional hub'"},
+                "carrier_class": {"type": "string", "description": "Carrier class filter: 'Full-service' | 'Low-cost' | 'Regional'"},
+            },
+            "required": ["type"],
+        },
+    },
+    {
         "name": "search_schedule",
         "description": (
             "Search flights in the schedule database by origin, destination, "
@@ -419,6 +501,62 @@ def execute_tool(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
                 return {"tool": tool_name, **get_network_summary()}
             else:
                 return {"tool": tool_name, "error": f"Unknown type '{query_type}'. Use: airport, route, airline, network"}
+
+        elif tool_name == "get_graph_analytics":
+            query_type = (args.get("type") or "").lower()
+            if query_type == "airport":
+                ap = (args.get("airport") or "").upper()
+                if not ap:
+                    return {"tool": tool_name, "error": "airport parameter required for type='airport'"}
+                from app.knowledge_graph.graph_analytics import get_airport_analytics
+                return {"tool": tool_name, **get_airport_analytics(ap)}
+            elif query_type == "network":
+                from app.knowledge_graph.graph_analytics import get_network_analytics_summary
+                return {"tool": tool_name, **get_network_analytics_summary()}
+            else:
+                return {"tool": tool_name, "error": f"Unknown type '{query_type}'. Use: airport, network"}
+
+        elif tool_name == "find_path":
+            o = (args.get("origin") or "").upper()
+            d = (args.get("destination") or "").upper()
+            if not o or not d:
+                return {"tool": tool_name, "error": "origin and destination required"}
+            from app.knowledge_graph.graph_analytics import find_shortest_path
+            return {"tool": tool_name, **find_shortest_path(o, d)}
+
+        elif tool_name == "semantic_query":
+            qt = (args.get("type") or "").lower()
+            from app.knowledge_graph.rdf_store import (
+                query_airlines_on_route, query_airports_by_tier,
+                query_alliance_carriers, query_carriers_at_airport,
+                query_airline_alliance, query_fsc_vs_lcc, is_rdf_ready,
+            )
+            if not is_rdf_ready():
+                return {"tool": tool_name, "found": False,
+                        "note": "RDF triple store not yet ready — semantic queries unavailable."}
+            if qt == "airlines_on_route":
+                o = (args.get("origin") or "").upper()
+                d = (args.get("destination") or "").upper()
+                return {"tool": tool_name, "airlines": query_airlines_on_route(o, d)}
+            elif qt == "hub_airports":
+                tier = args.get("tier", "Mega-hub")
+                return {"tool": tool_name, "airports": query_airports_by_tier(tier)}
+            elif qt == "alliance":
+                alliance = args.get("alliance", "")
+                return {"tool": tool_name, "members": query_alliance_carriers(alliance)}
+            elif qt == "carriers_at_airport":
+                ap      = (args.get("airport") or "").upper()
+                cls     = args.get("carrier_class", "Airline")
+                return {"tool": tool_name, "carriers": query_carriers_at_airport(ap, cls)}
+            elif qt == "airline_alliance":
+                al = (args.get("airline") or "").upper()
+                return {"tool": tool_name, "alliance": query_airline_alliance(al)}
+            elif qt == "fsc_vs_lcc":
+                o = (args.get("origin") or "").upper()
+                d = (args.get("destination") or "").upper()
+                return {"tool": tool_name, **query_fsc_vs_lcc(o, d)}
+            else:
+                return {"tool": tool_name, "error": f"Unknown semantic query type: '{qt}'."}
 
         elif tool_name == "search_schedule":
             day_of_week = args.get("day_of_week")

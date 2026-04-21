@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Sabre Network Intelligence</title>
   <script src="/static/chart.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f5f7fa; color: #1a202c; min-height: 100vh; }
@@ -235,6 +236,52 @@
     .tag.ok        { background: #f0fff4; color: #276749; border: 1px solid #c6f6d5; }
 
     footer { text-align: center; color: #cbd5e0; font-size: 0.75rem; padding: 24px; }
+
+    /* ── Network Graph Panel ── */
+    .graph-panel {
+      background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
+      padding: 0; margin-bottom: 20px; box-shadow: 0 1px 4px rgba(0,0,0,.05);
+      overflow: hidden;
+    }
+    .graph-panel-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 20px; background: #f8fafc; border-bottom: 1px solid #e2e8f0;
+    }
+    .graph-panel-header h2 { font-size: .72rem; color: #718096; letter-spacing: .05em; text-transform: uppercase; }
+    .graph-controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .graph-input {
+      background: #fff; border: 1px solid #cbd5e0; border-radius: 6px;
+      color: #1a202c; font-size: 0.82rem; padding: 6px 10px; outline: none; width: 80px;
+    }
+    .graph-input:focus { border-color: #667eea; }
+    .graph-btn {
+      background: #667eea; color: #fff; border: none; border-radius: 6px;
+      padding: 6px 14px; font-size: 0.8rem; cursor: pointer; font-weight: 600;
+      transition: background .2s;
+    }
+    .graph-btn:hover { background: #5a67d8; }
+    .graph-btn.outline {
+      background: transparent; color: #667eea; border: 1px solid #667eea;
+    }
+    .graph-btn.outline:hover { background: #eef2ff; }
+    .graph-body { display: flex; height: 500px; }
+    #cy { flex: 1; background: #f8fafc; }
+    .graph-sidebar {
+      width: 220px; border-left: 1px solid #e2e8f0; padding: 16px;
+      overflow-y: auto; background: #fff; font-size: 0.8rem;
+    }
+    .graph-sidebar h4 { font-size: 0.7rem; color: #718096; text-transform: uppercase;
+                        letter-spacing: .05em; margin-bottom: 10px; }
+    .graph-info-item { margin-bottom: 6px; color: #4a5568; }
+    .graph-info-item strong { color: #1a202c; }
+    .graph-legend { margin-top: 14px; }
+    .graph-legend-item { display: flex; align-items: center; gap: 6px; margin-bottom: 5px;
+                         font-size: 0.73rem; color: #4a5568; }
+    .graph-legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+    .graph-stats { margin-top: 14px; padding-top: 12px; border-top: 1px solid #f1f5f9; }
+    .graph-stats-item { display: flex; justify-content: space-between; margin-bottom: 4px;
+                        font-size: 0.73rem; }
+    .graph-stats-val { font-weight: 600; color: #2d3748; }
   </style>
 </head>
 <body>
@@ -324,9 +371,51 @@
     <button class="sim-btn" onclick="runSim()">Run Simulation</button>
     <div id="sim-result"></div>
   </div>
+  <!-- Network Graph Visualization (Cytoscape.js) -->
+  <div class="graph-panel">
+    <div class="graph-panel-header">
+      <h2>🕸️ Network Graph Explorer</h2>
+      <div class="graph-controls">
+        <select id="graph-mode" class="graph-input" style="width:110px">
+          <option value="hub">Hub View</option>
+          <option value="route">Route View</option>
+          <option value="airline">Airline View</option>
+        </select>
+        <input id="g-airport" class="graph-input" placeholder="Airport" maxlength="3" style="text-transform:uppercase;width:72px" title="Airport IATA code" />
+        <input id="g-dest"    class="graph-input" placeholder="Dest" maxlength="3"    style="text-transform:uppercase;width:64px;display:none" title="Destination (for Route view)" />
+        <input id="g-airline" class="graph-input" placeholder="Airline" maxlength="2" style="text-transform:uppercase;width:72px;display:none" title="Airline code (for Airline view)" />
+        <button class="graph-btn" onclick="loadGraph()">Load</button>
+        <button class="graph-btn outline" onclick="resetLayout()">↺ Reset</button>
+        <button class="graph-btn outline" onclick="fitGraph()">⤢ Fit</button>
+      </div>
+    </div>
+    <div class="graph-body">
+      <div id="cy"></div>
+      <div class="graph-sidebar">
+        <h4>Selected Node</h4>
+        <div id="graph-node-info">
+          <div style="color:#a0aec0;font-size:0.75rem">Click a node to see details</div>
+        </div>
+        <div class="graph-legend">
+          <h4>Hub Legend</h4>
+          <div class="graph-legend-item"><div class="graph-legend-dot" style="background:#2065d1"></div>Mega-hub</div>
+          <div class="graph-legend-item"><div class="graph-legend-dot" style="background:#0ea5e9"></div>Major hub</div>
+          <div class="graph-legend-item"><div class="graph-legend-dot" style="background:#10b981"></div>Secondary hub</div>
+          <div class="graph-legend-item"><div class="graph-legend-dot" style="background:#f59e0b"></div>Regional hub</div>
+          <div class="graph-legend-item"><div class="graph-legend-dot" style="background:#94a3b8"></div>Point-to-point</div>
+        </div>
+        <div class="graph-stats">
+          <h4>Graph Stats</h4>
+          <div class="graph-stats-item"><span>Nodes</span><span class="graph-stats-val" id="gs-nodes">—</span></div>
+          <div class="graph-stats-item"><span>Edges</span><span class="graph-stats-val" id="gs-edges">—</span></div>
+          <div class="graph-stats-item"><span>Hub tier</span><span class="graph-stats-val" id="gs-tier">—</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
 </main>
 
-<footer>Sabre Network Intelligence · Vertex AI gemini-2.5-flash · DuckDB</footer>
+<footer>Sabre Network Intelligence · Vertex AI gemini-2.5-flash · DuckDB · NetworkX · RDFLib · Kuzu · Cytoscape.js</footer>
 
 <script>
 const BASE = '';
@@ -892,6 +981,145 @@ async function runSim() {
 }
 
 document.getElementById('q-input').addEventListener('keydown', e => { if (e.key === 'Enter') askQuery(); });
+
+// ── Graph mode toggle ───────────────────────────────────────────────────────
+document.getElementById('graph-mode').addEventListener('change', function() {
+  const mode = this.value;
+  document.getElementById('g-airport').style.display = mode === 'airline' ? 'none' : '';
+  document.getElementById('g-dest').style.display    = mode === 'route'   ? '' : 'none';
+  document.getElementById('g-airline').style.display = mode === 'airline' ? '' : 'none';
+  if (mode === 'hub') {
+    document.getElementById('g-airport').placeholder = 'Airport';
+  } else if (mode === 'route') {
+    document.getElementById('g-airport').placeholder = 'Origin';
+  }
+});
+
+// ── Cytoscape instance ──────────────────────────────────────────────────────
+let _cy = null;
+
+function initCy(elements) {
+  if (_cy) { _cy.destroy(); _cy = null; }
+  _cy = cytoscape({
+    container: document.getElementById('cy'),
+    elements,
+    style: [
+      {
+        selector: 'node',
+        style: {
+          'label':              'data(city)',
+          'background-color':   'data(color)',
+          'width':              'data(size)',
+          'height':             'data(size)',
+          'font-size':          9,
+          'color':              '#2d3748',
+          'text-valign':        'bottom',
+          'text-margin-y':      4,
+          'border-width':       0,
+          'text-outline-width': 0,
+          'min-zoomed-font-size': 6,
+          'text-max-width':     60,
+          'text-wrap':          'wrap',
+        }
+      },
+      {
+        selector: 'node[?is_centre]',
+        style: {
+          'border-width': 3, 'border-color': '#2d3748',
+          'font-size': 11, 'font-weight': 'bold',
+        }
+      },
+      {
+        selector: "node[role='origin']",
+        style: { 'border-width': 3, 'border-color': '#38a169' }
+      },
+      {
+        selector: "node[role='destination']",
+        style: { 'border-width': 3, 'border-color': '#e53e3e' }
+      },
+      {
+        selector: "node[role='hub']",
+        style: { 'border-width': 2, 'border-color': '#f59e0b' }
+      },
+      {
+        selector: 'edge',
+        style: {
+          'width':              'data(weight)',
+          'line-color':         '#cbd5e0',
+          'target-arrow-color': '#a0aec0',
+          'target-arrow-shape': 'triangle',
+          'curve-style':        'bezier',
+          'opacity':            0.6,
+          'arrow-scale':        0.7,
+        }
+      },
+    ],
+    layout: {
+      name: 'cose',
+      animate: true, animationDuration: 600,
+      nodeRepulsion: () => 8000,
+      idealEdgeLength: () => 120,
+      edgeElasticity: () => 60,
+      gravity: 0.5, numIter: 800,
+    },
+  });
+
+  _cy.on('tap', 'node', function(evt) {
+    const d = evt.target.data();
+    const info = document.getElementById('graph-node-info');
+    info.innerHTML = `
+      <div class="graph-info-item"><strong>${d.id}</strong></div>
+      <div class="graph-info-item">${d.city || ''} ${d.country ? '· ' + d.country : ''}</div>
+      <div class="graph-info-item">Tier: <strong>${d.hub_tier || '—'}</strong></div>
+      <div class="graph-info-item">Hub Score: <strong>${d.hub_score ?? '—'}</strong></div>
+      <div class="graph-info-item">Destinations: <strong>${d.dest_count ?? '—'}</strong></div>
+      <div class="graph-info-item">Wkly Flights: <strong>${d.out_freq ? d.out_freq.toLocaleString() : '—'}</strong></div>
+    `;
+    document.getElementById('gs-tier').textContent = d.hub_tier || '—';
+  });
+}
+
+async function loadGraph() {
+  const mode = document.getElementById('graph-mode').value;
+  let url = `${BASE}/api/v1/graph/`;
+  if (mode === 'hub') {
+    const ap = document.getElementById('g-airport').value.trim().toUpperCase();
+    if (!ap) { alert('Enter an airport code'); return; }
+    url += `hub?airport=${ap}&max_nodes=30`;
+  } else if (mode === 'route') {
+    const o = document.getElementById('g-airport').value.trim().toUpperCase();
+    const d = document.getElementById('g-dest').value.trim().toUpperCase();
+    if (!o || !d) { alert('Enter both Origin and Dest'); return; }
+    url += `route?origin=${o}&dest=${d}`;
+  } else {
+    const al = document.getElementById('g-airline').value.trim().toUpperCase();
+    if (!al) { alert('Enter an airline code'); return; }
+    url += `airline?code=${al}&top_routes=40`;
+  }
+
+  try {
+    const data = await fetch(url).then(r => r.json());
+    if (data.error) { alert('Graph API: ' + data.error); return; }
+    const elems = data.elements;
+    const nodes = (elems.nodes || []).map(n => ({ group: 'nodes', data: n.data }));
+    const edges = (elems.edges || []).map(e => ({ group: 'edges', data: e.data }));
+    initCy([...nodes, ...edges]);
+    document.getElementById('gs-nodes').textContent = nodes.length;
+    document.getElementById('gs-edges').textContent = edges.length;
+    if (data.stats && data.stats.hub_tier)
+      document.getElementById('gs-tier').textContent = data.stats.hub_tier;
+  } catch(e) {
+    alert('Graph load error: ' + e.message);
+  }
+}
+
+function resetLayout() {
+  if (_cy) _cy.layout({ name: 'cose', animate: true, animationDuration: 500 }).run();
+}
+function fitGraph() {
+  if (_cy) _cy.fit(undefined, 20);
+}
+
 loadStatus();
 </script>
 </body>

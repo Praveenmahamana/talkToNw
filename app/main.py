@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
 from app.api.routes import router
+from app.api.graph_viz_routes import router as graph_router
 from app.database.db import configure_db, close_connection
 from app.database.models import init_db
 from app.utils.logging import setup_logging
@@ -77,13 +78,14 @@ async def lifespan(app: FastAPI):
             init_workset()
         except Exception as exc:
             logger.warning(f"Workset background load failed: {exc}")
-        # Build knowledge graph AFTER workset data is loaded so hub metrics include
-        # demand context; KG build is fast (~2 s) compared to workset load (~45 s)
+        # Build full KG stack: NetworkX → RDFLib → Kuzu → Analytics
         try:
-            from app.knowledge_graph.graph_builder import init_graph
-            init_graph()
+            from app.knowledge_graph.graph_construction import build_all
+            summary = build_all()
+            ok_layers = sum(1 for v in summary.values() if isinstance(v, dict) and v.get("ok"))
+            logger.info(f"KG construction complete — {ok_layers}/4 layers built.")
         except Exception as exc:
-            logger.warning(f"Knowledge graph build failed: {exc}")
+            logger.warning(f"Knowledge graph construction failed: {exc}")
 
     loop = asyncio.get_event_loop()
     loop.run_in_executor(None, _load_workset_bg)
@@ -138,6 +140,7 @@ def create_app() -> FastAPI:
 
     # Include API routes
     app.include_router(router, prefix="/api/v1")
+    app.include_router(graph_router, prefix="/api/v1")
 
     # Root → landing page
     @app.get("/", include_in_schema=False)

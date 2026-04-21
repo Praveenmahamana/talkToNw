@@ -107,22 +107,22 @@ async def ingest_schedules(request: IngestRequest):
     try:
         result = _svc.ingest_folder(request.folder_path)
 
-        # Rebuild knowledge graph in background after new data is loaded
+        # Rebuild full knowledge graph stack in background after new data is loaded
         if result.get("rows_inserted", 0) > 0:
             import asyncio
             loop = asyncio.get_event_loop()
 
             def _rebuild_kg():
                 try:
-                    from app.knowledge_graph.graph_builder import rebuild_graph
-                    rebuild_graph()
+                    from app.knowledge_graph.graph_construction import rebuild_all
+                    rebuild_all()
                     from app.ai.agent import init_schedule_name
                     init_schedule_name()
                 except Exception as exc:
                     logger.warning(f"Post-ingest KG rebuild failed: {exc}")
 
             loop.run_in_executor(None, _rebuild_kg)
-            logger.info("Post-ingest KG rebuild queued.")
+            logger.info("Post-ingest full KG rebuild queued.")
 
         return IngestResponse(
             status=result["status"],

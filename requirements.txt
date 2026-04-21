@@ -35,5 +35,7 @@ pytest-asyncio>=0.21.0
 # Rich output (optional CLI debugging)
 rich>=13.6.0
 
-# Knowledge Graph (in-memory property graph over DuckDB)
+# Knowledge Graph (multi-layer stack per awesome-knowledge-graph)
 networkx>=3.2.1
+rdflib>=6.3.2
+kuzu>=0.3.0
