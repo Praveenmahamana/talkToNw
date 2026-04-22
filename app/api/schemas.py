@@ -55,6 +55,7 @@ class QueryRequest(BaseModel):
     query:         str = Field(..., description="Natural language query about the schedule")
     max_results:   int = Field(default=20, ge=1, le=200)
     session_id:    Optional[str] = Field(None, description="Session ID to continue a conversation thread. Omit to start a new thread.")
+    persona:       Optional[str] = Field(None, description="Active user persona key (route|network|ops|revenue|alliance) to tailor response style.")
 
 
 class QueryResponse(BaseModel):
@@ -67,6 +68,17 @@ class QueryResponse(BaseModel):
     visualizations:  List[Dict]       = Field(default_factory=list)
     confidence:      str              = "Low"
     response_time:   Optional[float]  = None
+
+
+class SuggestRequest(BaseModel):
+    query:    str            = Field(..., description="The user's last question")
+    answer:   str            = Field(..., description="The AI's answer (will be truncated server-side)")
+    persona:  Optional[str]  = Field(None, description="Active persona key")
+    entities: List[str]      = Field(default_factory=list, description="IATA codes or entity names mentioned")
+
+
+class SuggestResponse(BaseModel):
+    questions: List[str] = Field(default_factory=list)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

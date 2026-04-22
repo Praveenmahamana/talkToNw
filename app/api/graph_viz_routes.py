@@ -382,46 +382,78 @@ async def graph_overview(
 
     if not is_ready():
         return JSONResponse(status_code=503, content={"error": "Knowledge graph not ready."})
-    if not is_analytics_ready():
-        return JSONResponse(status_code=503, content={"error": "Graph analytics not ready."})
 
-    G        = get_graph()
-    cache    = get_analytics_cache()
-    pagerank = cache["pagerank"]
-    between  = cache["betweenness"]
-    ap_comm  = cache["airport_community"]
+    G = get_graph()
+    partial = not is_analytics_ready()
 
-    # ── Airport nodes (PageRank-ranked, min_connections filter) ──────────────
-    all_sorted = sorted(pagerank.items(), key=lambda x: x[1], reverse=True)
-    # Keep only airports with enough connections (dest_count >= min_connections)
-    filtered = [
-        (ap, pr) for ap, pr in all_sorted
-        if ap in G and G.nodes[ap].get("dest_count", 0) >= min_connections
-    ][:max_nodes]
-    top_codes = {ap for ap, _ in filtered}
+    if partial:
+        # Analytics still building — use degree-based fallback
+        airport_nodes = [
+            (ap, G.nodes[ap].get("dest_count", 0))
+            for ap in G.nodes()
+            if G.nodes[ap].get("node_type") == "airport"
+               and G.nodes[ap].get("dest_count", 0) >= min_connections
+        ]
+        airport_nodes.sort(key=lambda x: x[1], reverse=True)
+        filtered = airport_nodes[:max_nodes]
+        top_codes = {ap for ap, _ in filtered}
 
-    nodes: List[Dict] = []
-    for ap, pr_score in filtered:
-        if ap not in G:
-            continue
-        gnode   = G.nodes[ap]
-        comm_id = ap_comm.get(ap, 0)
-        info    = AIRPORT_INFO.get(ap, {})
-        nodes.append({"data": {
-            "id":                ap,
-            "code":              ap,
-            "label":             ap,
-            "entity_type":       "Airport",
-            "city":              info.get("city", ap),
-            "country":           info.get("country", ""),
-            "hub_tier":          gnode.get("hub_tier", "Point-to-point"),
-            "community_id":      comm_id,
-            "comm_color":        _COMM_COLORS[comm_id % len(_COMM_COLORS)],
-            "pagerank_score":    round(pr_score, 1),
-            "betweenness_score": round(between.get(ap, 0.0), 1),
-            "dest_count":        int(gnode.get("dest_count", 0)),
-            "out_freq":          int(gnode.get("out_freq", 0)),
-        }})
+        nodes: List[Dict] = []
+        for ap, dest_cnt in filtered:
+            gnode = G.nodes[ap]
+            info  = AIRPORT_INFO.get(ap, {})
+            nodes.append({"data": {
+                "id":                ap,
+                "code":              ap,
+                "label":             ap,
+                "entity_type":       "Airport",
+                "city":              info.get("city", ap),
+                "country":           info.get("country", ""),
+                "hub_tier":          gnode.get("hub_tier", "Point-to-point"),
+                "community_id":      0,
+                "comm_color":        "#60a5fa",
+                "pagerank_score":    0,
+                "betweenness_score": 0,
+                "dest_count":        int(dest_cnt),
+                "out_freq":          int(gnode.get("out_freq", 0)),
+            }})
+    else:
+        cache    = get_analytics_cache()
+        pagerank = cache["pagerank"]
+        between  = cache["betweenness"]
+        ap_comm  = cache["airport_community"]
+
+        # ── Airport nodes (PageRank-ranked, min_connections filter) ──────────────
+        all_sorted = sorted(pagerank.items(), key=lambda x: x[1], reverse=True)
+        # Keep only airports with enough connections (dest_count >= min_connections)
+        filtered = [
+            (ap, pr) for ap, pr in all_sorted
+            if ap in G and G.nodes[ap].get("dest_count", 0) >= min_connections
+        ][:max_nodes]
+        top_codes = {ap for ap, _ in filtered}
+
+        nodes: List[Dict] = []
+        for ap, pr_score in filtered:
+            if ap not in G:
+                continue
+            gnode   = G.nodes[ap]
+            comm_id = ap_comm.get(ap, 0)
+            info    = AIRPORT_INFO.get(ap, {})
+            nodes.append({"data": {
+                "id":                ap,
+                "code":              ap,
+                "label":             ap,
+                "entity_type":       "Airport",
+                "city":              info.get("city", ap),
+                "country":           info.get("country", ""),
+                "hub_tier":          gnode.get("hub_tier", "Point-to-point"),
+                "community_id":      comm_id,
+                "comm_color":        _COMM_COLORS[comm_id % len(_COMM_COLORS)],
+                "pagerank_score":    round(pr_score, 1),
+                "betweenness_score": round(between.get(ap, 0.0), 1),
+                "dest_count":        int(gnode.get("dest_count", 0)),
+                "out_freq":          int(gnode.get("out_freq", 0)),
+            }})
 
     # ── Airport↔Airport edges with relation='connects' ────────────────────────
     edges: List[Dict] = []
@@ -454,68 +486,130 @@ async def graph_overview(
     edges.sort(key=lambda e: e["data"]["weekly_flights"], reverse=True)
 
     # ── Carrier + AircraftType nodes & typed edges (via entity taxonomy) ───────
+    # Skip in partial mode — taxonomy calls Gemini on first run (slow) and requires analytics
     try:
-        taxonomy = build_entity_taxonomy(G)
+        taxonomy = None if partial else build_entity_taxonomy(G)
+        if taxonomy is not None:
+            for cn in taxonomy["carrier_nodes"]:
+                nodes.append({"data": {
+                    "id":           cn["id"],
+                    "label":        cn["label"],
+                    "name":         cn.get("name", cn["label"]),
+                    "entity_type":  "Carrier",
+                    "carrier_type": cn.get("carrier_subtype") or cn.get("carrier_type", ""),
+                    "alliance":     cn.get("alliance", "None"),
+                    "description":  cn.get("description", ""),
+                    "routes":       cn.get("routes", 0),
+                    "airports_count": cn.get("airports_count", 0),
+                    "total_freq":   cn.get("total_freq", 0),
+                }})
 
-        for cn in taxonomy["carrier_nodes"]:
-            nodes.append({"data": {
-                "id":           cn["id"],
-                "label":        cn["label"],
-                "name":         cn.get("name", cn["label"]),
-                "entity_type":  "Carrier",
-                "carrier_type": cn.get("carrier_subtype") or cn.get("carrier_type", ""),
-                "alliance":     cn.get("alliance", "None"),
-                "description":  cn.get("description", ""),
-                "routes":       cn.get("routes", 0),
-                "airports_count": cn.get("airports_count", 0),
-                "total_freq":   cn.get("total_freq", 0),
-            }})
+            for an in taxonomy["aircraft_nodes"]:
+                nodes.append({"data": {
+                    "id":          an["id"],
+                    "label":       an["label"],
+                    "entity_type": "AircraftType",
+                    "operators":   an.get("operators", 0),
+                    "routes":      an.get("routes", 0),
+                }})
 
-        for an in taxonomy["aircraft_nodes"]:
-            nodes.append({"data": {
-                "id":          an["id"],
-                "label":       an["label"],
-                "entity_type": "AircraftType",
-                "operators":   an.get("operators", 0),
-                "routes":      an.get("routes", 0),
-            }})
+            for ce in taxonomy["carrier_edges"]:
+                edges.append({"data": {
+                    "id":       ce["id"],
+                    "source":   ce["source"],
+                    "target":   ce["target"],
+                    "relation": ce["relation"],
+                    "weight":   ce.get("weight", 1.0),
+                }})
 
-        for ce in taxonomy["carrier_edges"]:
-            edges.append({"data": {
-                "id":       ce["id"],
-                "source":   ce["source"],
-                "target":   ce["target"],
-                "relation": ce["relation"],
-                "weight":   ce.get("weight", 1.0),
-            }})
+            for ae in taxonomy["aircraft_edges"]:
+                edges.append({"data": {
+                    "id":       ae["id"],
+                    "source":   ae["source"],
+                    "target":   ae["target"],
+                    "relation": ae["relation"],
+                    "weight":   ae.get("weight", 1.0),
+                }})
 
-        for ae in taxonomy["aircraft_edges"]:
-            edges.append({"data": {
-                "id":       ae["id"],
-                "source":   ae["source"],
-                "target":   ae["target"],
-                "relation": ae["relation"],
-                "weight":   ae.get("weight", 1.0),
-            }})
-
-        carrier_count  = len(taxonomy["carrier_nodes"])
-        aircraft_count = len(taxonomy["aircraft_nodes"])
+        carrier_count  = len(taxonomy["carrier_nodes"]) if taxonomy else 0
+        aircraft_count = len(taxonomy["aircraft_nodes"]) if taxonomy else 0
     except Exception as exc:
         logger.warning(f"Entity taxonomy failed (continuing without): {exc}")
         carrier_count = aircraft_count = 0
+
+    if partial:
+        stats_extra = {
+            "total_airports": G.number_of_nodes(),
+            "total_routes":   G.number_of_edges(),
+            "community_count": 1,
+            "partial": True,
+        }
+    else:
+        stats_extra = {
+            "total_airports":  cache["total_airports"],
+            "total_routes":    cache["total_routes"],
+            "community_count": len(set(ap_comm.values())),
+            "partial": False,
+        }
 
     return {
         "elements": {"nodes": nodes, "edges": edges},
         "entity_colors":   ENTITY_COLORS,
         "relation_colors": RELATION_COLORS,
         "stats": {
-            "nodes":           len(nodes),
-            "edges":           len(edges),
-            "airport_count":   len(top_codes),
-            "carrier_count":   carrier_count,
-            "aircraft_count":  aircraft_count,
-            "total_airports":  cache["total_airports"],
-            "total_routes":    cache["total_routes"],
-            "community_count": len(set(ap_comm.values())),
+            "nodes":          len(nodes),
+            "edges":          len(edges),
+            "airport_count":  len(top_codes),
+            "carrier_count":  carrier_count,
+            "aircraft_count": aircraft_count,
+            **stats_extra,
         },
     }
+
+
+@router.get("/build-events")
+async def build_events():
+    """SSE stream of KG build progress events."""
+    from app.knowledge_graph.graph_builder import get_graph, is_ready
+    from app.knowledge_graph.graph_construction import get_build_status
+    from app.knowledge_graph.graph_analytics import is_analytics_ready
+    from fastapi.responses import StreamingResponse
+    import asyncio, json
+
+    async def event_stream():
+        sent_nodes = False
+        sent_complete = False
+        for _ in range(120):  # max 4 minutes
+            try:
+                status = get_build_status()
+                layers = status.get("layers", {})
+
+                if not sent_nodes and is_ready():
+                    G = get_graph()
+                    node_count = G.number_of_nodes()
+                    edge_count = G.number_of_edges()
+                    data = json.dumps({"type": "kg_ready", "nodes": node_count, "edges": edge_count})
+                    yield f"data: {data}\n\n"
+                    sent_nodes = True
+
+                if sent_nodes and not sent_complete and is_analytics_ready():
+                    data = json.dumps({"type": "analytics_ready"})
+                    yield f"data: {data}\n\n"
+                    sent_complete = True
+                    break
+
+                building = [k for k, v in layers.items() if not v.get("ready", False)]
+                data = json.dumps({"type": "progress", "building": building, "status": layers})
+                yield f"data: {data}\n\n"
+
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+            await asyncio.sleep(2)
+
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    })

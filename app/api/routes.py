@@ -10,6 +10,7 @@ from loguru import logger
 from app.api.schemas import (
     IngestRequest, IngestResponse,
     QueryRequest, QueryResponse,
+    SuggestRequest, SuggestResponse,
     AddFlightRequest, AddFlightResponse,
     RetimeFlightRequest, RetimeFlightResponse,
     HealthResponse, RouteSearchRequest,
@@ -148,9 +149,9 @@ async def query_schedule(request: QueryRequest):
     Answer a natural language question about the schedule using
     Gemini + deterministic rule engine.
     """
-    logger.info(f"POST /query — '{request.query[:80]}'")
+    logger.info(f"POST /query — '{request.query[:80]}' persona={request.persona}")
     try:
-        result = _agent.query(request.query, session_id=request.session_id)
+        result = _agent.query(request.query, session_id=request.session_id, persona=request.persona)
         vizs = extract_visualizations(result.get("tool_results", []))
         return QueryResponse(
             answer=result.get("answer", ""),
@@ -166,6 +167,335 @@ async def query_schedule(request: QueryRequest):
     except Exception as exc:
         logger.exception(f"Query error: {exc}")
         raise HTTPException(status_code=500, detail=f"Query failed: {exc}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LM-powered follow-up question suggestions
+# ─────────────────────────────────────────────────────────────────────────────
+
+_PERSONA_LABELS = {
+    "route":    ("Route Analyst",    "route metrics, capacity, O&D competition"),
+    "network":  ("Network Strategist","hub topology, PageRank, connectivity gaps"),
+    "ops":      ("Ops Manager",       "fleet utilization, turnarounds, curfews"),
+    "revenue":  ("Revenue Manager",   "yield opportunities, market share, demand"),
+    "alliance": ("Alliance Director", "codeshare, interline, partnership analysis"),
+}
+
+_SUGGEST_SYSTEM = (
+    "You are a research question generator for an airline network intelligence platform. "
+    "Your only job is to output a JSON array of 4 short follow-up questions. "
+    "Never explain. Never add keys. Output ONLY the JSON array."
+)
+
+
+@router.post("/suggest", response_model=SuggestResponse, tags=["Query"])
+async def suggest_questions(request: SuggestRequest):
+    """
+    Generate 4 LM-powered follow-up questions based on the user's last query,
+    the AI answer, the active persona, and any highlighted graph entities.
+    Fast single-generation call — no tools, no history.
+    """
+    from app.ai.vertex_client import generate_content, extract_text, is_available
+    import json as _json
+
+    # Gracefully degrade when Vertex AI is not available
+    if not is_available():
+        return SuggestResponse(questions=[])
+
+    persona_key = (request.persona or "").lower()
+    persona_name, persona_desc = _PERSONA_LABELS.get(persona_key, ("General Analyst", "airline schedule intelligence"))
+
+    answer_snippet = request.answer[:500].strip()
+    entities_str   = ", ".join(request.entities[:10]) if request.entities else "none highlighted"
+
+    user_msg = (
+        f"User asked: {request.query}\n\n"
+        f"AI answered (excerpt): {answer_snippet}\n\n"
+        f"Active persona: {persona_name} — focuses on {persona_desc}\n"
+        f"Entities in graph context: {entities_str}\n\n"
+        "Generate exactly 4 follow-up research questions that:\n"
+        "1. Continue naturally from the user's direction (don't repeat the same angle)\n"
+        "2. Go progressively deeper or branch into related strategic angles\n"
+        "3. Match the persona's focus area\n"
+        "4. Are specific — include airport codes, airlines, or metrics where relevant\n"
+        "5. Are concise (max 15 words each)\n\n"
+        'Reply ONLY with a JSON array: ["Q1?", "Q2?", "Q3?", "Q4?"]'
+    )
+
+    try:
+        response = generate_content(
+            contents=[{"role": "user", "parts": [{"text": user_msg}]}],
+            system_instruction=_SUGGEST_SYSTEM,
+            temperature=0.8,
+        )
+        raw_text = extract_text(response) or "[]"
+
+        # Parse — handle model wrapping in markdown code fences
+        raw_text = raw_text.strip()
+        if raw_text.startswith("```"):
+            raw_text = raw_text.split("```")[1]
+            if raw_text.startswith("json"):
+                raw_text = raw_text[4:]
+        raw_text = raw_text.strip()
+
+        questions = _json.loads(raw_text)
+        if not isinstance(questions, list):
+            questions = []
+        questions = [str(q).strip() for q in questions if q][:4]
+        return SuggestResponse(questions=questions)
+
+    except Exception as exc:
+        logger.warning(f"Suggest endpoint error: {exc}")
+        return SuggestResponse(questions=[])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Simulation AI narrative analyser
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post("/sim-analyze", tags=["Simulation"])
+async def sim_analyze(body: dict):
+    """
+    Generate an expert AI narrative for a simulation result.
+    Takes the flight proposal + rule-engine output; returns plain-English
+    analysis, 2-3 prioritised action items, and a confidence summary.
+    """
+    from app.ai.vertex_client import generate_content, extract_text, is_available
+    import json as _json
+
+    if not is_available():
+        return {"headline": "", "narrative": "AI analysis unavailable.", "actions": [], "confidence": "low", "confidence_reason": ""}
+
+    flight   = body.get("flight_proposal", {})
+    sim_res  = body.get("sim_result", {})
+    persona  = body.get("persona", "")
+
+    origin      = flight.get("origin", "?")
+    dest        = flight.get("destination", "?")
+    dep         = flight.get("departure_local", "?")
+    ac          = flight.get("aircraft_type", "?")
+    airline     = flight.get("airline", "?")
+    f_score     = sim_res.get("feasibility_score", "?")
+    n_score     = sim_res.get("network_value_score", "?")
+    verdict     = sim_res.get("verdict", "")
+    violations  = sim_res.get("violations", [])
+    warnings    = sim_res.get("warnings", [])
+    risks       = sim_res.get("risks", [])
+    best_windows= sim_res.get("best_window", [])
+
+    persona_line = f"\nYour persona for this analysis: {persona}.\n" if persona else ""
+
+    user_msg = f"""Analyse this airline simulation result.{persona_line}
+
+PROPOSED FLIGHT:  {airline} {origin} → {dest}  dep {dep}  aircraft {ac}
+FEASIBILITY:      {f_score}/100
+NETWORK VALUE:    {n_score}/100
+VERDICT:          {verdict}
+VIOLATIONS ({len(violations)}): {'; '.join(str(v) for v in violations) if violations else 'None'}
+WARNINGS  ({len(warnings)}):   {'; '.join(str(w) for w in warnings)   if warnings   else 'None'}
+RISKS:            {'; '.join(str(r) for r in risks)[:300] if risks else 'None'}
+BEST WINDOWS:     {_json.dumps(best_windows[:2]) if best_windows else 'None'}
+
+Reply in this EXACT JSON (no fences):
+{{"headline":"One punchy verdict sentence ≤15 words","narrative":"2-3 sentences plain English — cite scores and violations, explain network impact","actions":["Specific fix with exact values","Second action","Optional third action"],"confidence":"high|medium|low","confidence_reason":"One sentence"}}"""
+
+    system = "You are a senior airline network strategist. Reply only with the requested JSON object — no markdown, no preamble."
+
+    try:
+        resp = generate_content(
+            contents=[{"role": "user", "parts": [{"text": user_msg}]}],
+            system_instruction=system,
+            temperature=0.4,
+        )
+        raw = (extract_text(resp) or "").strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        result = _json.loads(raw.strip())
+        if not isinstance(result.get("actions"), list):
+            result["actions"] = []
+        return result
+    except Exception as exc:
+        logger.warning(f"sim-analyze error: {exc}")
+        return {
+            "headline": verdict or "Simulation complete.",
+            "narrative": (f"Feasibility {f_score}/100 · Network value {n_score}/100. " +
+                          (f"Key issue: {violations[0]}" if violations else "No rule violations detected.")),
+            "actions": [],
+            "confidence": "low",
+            "confidence_reason": "AI narrative generation failed; showing raw scores."
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Smart flight opportunity ranker
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _slot_label(hour: int) -> str:
+    if  6 <= hour <=  9: return "Business Morning"
+    if 17 <= hour <= 20: return "Business Evening"
+    if 12 <= hour <= 16: return "Afternoon"
+    if 10 <= hour <= 11: return "Late Morning"
+    if 21 <= hour <= 23: return "Late Evening"
+    return "Overnight"
+
+
+_SLOT_BASE_SCORES = {
+    6: 40, 7: 42, 8: 40, 9: 35,
+    17: 35, 18: 38, 19: 35, 20: 30,
+    12: 20, 13: 22, 14: 20, 15: 18, 16: 15,
+    10: 15, 11: 12,
+    21: 10, 22: 8, 23: 5,
+    0: 3, 1: 2, 2: 1, 3: 1, 4: 2, 5: 4,
+}
+
+
+@router.get("/flight-opportunities", tags=["Simulation"])
+async def flight_opportunities(origin: str, destination: str, airline: str = ""):
+    """
+    Return 3 ranked flight-addition opportunities for an O&D pair.
+    Scores time-slot gaps against existing schedule + workset demand.
+    """
+    from app.database.db import get_connection
+    from datetime import date, timedelta
+
+    origin = origin.upper().strip()
+    dest   = destination.upper().strip()
+    if not origin or not dest or len(origin) != 3 or len(dest) != 3:
+        raise HTTPException(status_code=400, detail="origin and destination must be 3-letter IATA codes")
+
+    conn = get_connection()
+
+    # ── 1. Existing schedule hours for this O&D ───────────────────────────────
+    try:
+        ex_rows = conn.execute("""
+            SELECT HOUR(departure_local) AS dep_hour,
+                   aircraft_type, airline AS al, block_time,
+                   COUNT(DISTINCT flight_number) AS flights
+            FROM flights
+            WHERE origin = ? AND destination = ? AND service_type = 'J'
+              AND departure_local IS NOT NULL
+            GROUP BY dep_hour, aircraft_type, al, block_time
+            ORDER BY dep_hour
+        """, [origin, dest]).fetchall()
+    except Exception:
+        ex_rows = []
+
+    existing_hours = {r[0] for r in ex_rows if r[0] is not None}
+
+    # Derive dominant aircraft + avg block time from existing schedule
+    default_ac  = "77W"
+    default_cap = 364
+    avg_block   = 180.0
+    if ex_rows:
+        ac_counts: dict = {}
+        block_sum = 0; block_n = 0
+        for r in ex_rows:
+            if r[1]: ac_counts[r[1]] = ac_counts.get(r[1], 0) + (r[4] or 1)
+            if r[3]: block_sum += r[3]; block_n += 1
+        if ac_counts:
+            default_ac = max(ac_counts, key=ac_counts.get)
+        if block_n:
+            avg_block = block_sum / block_n
+
+    # Yield and capacity proxy from block time
+    if avg_block < 90:
+        yield_usd = 80;  default_cap = 189; ac_hint = "73H"
+    elif avg_block < 180:
+        yield_usd = 140; default_cap = 189; ac_hint = "73H"
+    elif avg_block < 300:
+        yield_usd = 220; default_cap = 280; ac_hint = "77W"
+    elif avg_block < 480:
+        yield_usd = 380; default_cap = 364; ac_hint = "77W"
+    else:
+        yield_usd = 620; default_cap = 489; ac_hint = "388"
+
+    if not ex_rows:
+        default_ac = ac_hint
+
+    # ── 2. Workset demand data ────────────────────────────────────────────────
+    daily_demand = float(default_cap) * 0.78   # fallback
+    daily_spill  = daily_demand * 0.12
+    weekly_spill_total = None
+    try:
+        row = conn.execute("""
+            SELECT SUM(demand_pax), SUM(spill_pax), AVG(cap_total)
+            FROM workset_base
+            WHERE origin = ? AND dest = ?
+        """, [origin, dest]).fetchone()
+        if row and row[0]:
+            weekly_demand = float(row[0])
+            weekly_spill  = float(row[1] or 0)
+            daily_demand  = weekly_demand / 7
+            daily_spill   = weekly_spill  / 7
+            weekly_spill_total = int(weekly_spill)
+            if row[2]:
+                default_cap = int(row[2])
+    except Exception:
+        pass
+
+    # ── 3. Score every hour slot ──────────────────────────────────────────────
+    candidates = []
+    for hour, base in _SLOT_BASE_SCORES.items():
+        # Proximity penalty: each existing flight within 3h reduces score
+        penalty = sum(max(0, 36 - abs(hour - eh) * 14) for eh in existing_hours)
+        score   = max(0, base - penalty)
+        candidates.append((score, hour, base))
+    candidates.sort(reverse=True)
+    top3 = candidates[:3]
+
+    # ── 4. Build opportunity cards ────────────────────────────────────────────
+    today = date.today()
+    # Next Sunday for a clean week
+    days_to_sun = (6 - today.weekday()) % 7 or 7
+    dep_date = today + timedelta(days=days_to_sun)
+
+    minutes_cycle = [30, 0, 45]
+    results = []
+    for rank, (score, hour, base_score) in enumerate(top3, 1):
+        minute   = minutes_cycle[rank - 1]
+        dep_time = f"{hour:02d}:{minute:02d}"
+
+        # Slot share: better slot = more captured demand
+        slot_share = 0.22 if base_score >= 35 else (0.16 if base_score >= 20 else 0.10)
+        gap_h      = min((abs(hour - eh) for eh in existing_hours), default=12)
+        pax_est    = max(40, int(min(
+            daily_spill * 0.85 + daily_demand * slot_share,
+            default_cap * 0.88
+        )))
+        rev_est = pax_est * yield_usd
+
+        results.append({
+            "rank":             rank,
+            "origin":           origin,
+            "destination":      dest,
+            "departure_time":   dep_time,
+            "departure_local":  f"{dep_date.isoformat()} {dep_time}",
+            "aircraft_type":    default_ac,
+            "airline":          (airline.upper() or "EK"),
+            "est_pax":          pax_est,
+            "est_revenue":      int(rev_est),
+            "opportunity_score": round(score),
+            "slot_label":       _slot_label(hour),
+            "gap_hours":        round(gap_h, 1),
+            "reasoning": (
+                f"{_slot_label(hour)} · {gap_h:.0f}h gap from nearest existing flight"
+            ),
+        })
+
+    return {
+        "opportunities": results,
+        "context": {
+            "origin":                 origin,
+            "destination":            dest,
+            "existing_weekly_flights": len(ex_rows),
+            "daily_demand_est":       int(daily_demand),
+            "weekly_spill_total":     weekly_spill_total,
+            "avg_block_min":          int(avg_block),
+            "yield_usd":              yield_usd,
+        },
+    }
 
 
 @router.get("/session/{session_id}", tags=["Query"])

@@ -92,6 +92,49 @@
     .query-row button:hover { background: #5a67d8; }
     .query-row button:disabled { background: #e2e8f0; color: #a0aec0; cursor: not-allowed; }
 
+    /* ── Persona selector ── */
+    .persona-bar {
+      display: flex; gap: 6px; padding: 10px 14px 0;
+      overflow-x: auto; scrollbar-width: none; flex-shrink: 0;
+    }
+    .persona-bar::-webkit-scrollbar { display: none; }
+    .persona-pill {
+      display: flex; align-items: center; gap: 5px;
+      padding: 5px 13px; border-radius: 20px; cursor: pointer; white-space: nowrap;
+      border: 1.5px solid #e2e8f0; background: #fff;
+      font-size: 0.72rem; font-weight: 500; color: #718096;
+      transition: all .18s; flex-shrink: 0; user-select: none;
+    }
+    .persona-pill:hover { border-color: #667eea; color: #667eea; }
+    .persona-pill.active { color: #fff !important; border-color: transparent !important; box-shadow: 0 2px 8px rgba(0,0,0,.18); }
+    .persona-pill-icon { font-size: 0.88rem; line-height: 1; }
+
+    /* ── Suggestion chips strip ── */
+    .suggestion-strip {
+      display: flex; gap: 6px; padding: 7px 14px;
+      overflow-x: auto; scrollbar-width: none; flex-shrink: 0;
+      border-top: 1px solid #f1f5f9; min-height: 42px; align-items: center;
+      background: #fafbfc; transition: opacity .3s;
+    }
+    .suggestion-strip::-webkit-scrollbar { display: none; }
+    .suggestion-strip.loading { opacity: .5; pointer-events: none; }
+    .suggestion-chip {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 5px 13px; border-radius: 16px; cursor: pointer; white-space: nowrap;
+      border: 1px solid #e2e8f0; background: #fff;
+      font-size: 0.72rem; color: #4a5568; flex-shrink: 0;
+      transition: all .15s; animation: fadeIn .25s ease;
+    }
+    .suggestion-chip:hover { background: #edf2ff; border-color: #667eea; color: #4338ca; }
+    .suggestion-chip-icon { font-size: 0.78rem; opacity: .7; }
+    /* Skeleton chips shown while LM is generating suggestions */
+    .suggestion-skeleton {
+      display: inline-block; border-radius: 16px; height: 28px; flex-shrink: 0;
+      background: linear-gradient(90deg, #e2e8f0 25%, #f1f5f9 50%, #e2e8f0 75%);
+      background-size: 200% 100%; animation: shimmer 1.4s infinite;
+    }
+    @keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+
     /* ── Analysis Panel (full width, below chat) ── */
     #analysis-panel {
       display: none;
@@ -237,6 +280,156 @@
     .tag.warning   { background: #fffaf0; color: #c05621; border: 1px solid #feebc8; }
     .tag.ok        { background: #f0fff4; color: #276749; border: 1px solid #c6f6d5; }
 
+    /* ── Flight Opportunity Cards ── */
+    #sim-suggestions { display: none; margin-bottom: 24px; }
+    .sim-opp-header {
+      display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;
+    }
+    .sim-opp-title {
+      font-size: 0.72rem; color: #718096; text-transform: uppercase; letter-spacing: .05em; font-weight: 600;
+    }
+    .sim-opp-context {
+      font-size: 0.72rem; color: #667eea; background: #ebf4ff; border-radius: 10px;
+      padding: 2px 10px; font-weight: 500;
+    }
+    .sim-opp-refresh {
+      background: none; border: 1px solid #cbd5e0; border-radius: 6px; padding: 3px 10px;
+      font-size: 0.72rem; color: #718096; cursor: pointer; transition: all .2s;
+    }
+    .sim-opp-refresh:hover { background: #f7fafc; border-color: #667eea; color: #667eea; }
+    .sim-opp-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    @media (max-width: 900px) { .sim-opp-grid { grid-template-columns: 1fr; } }
+    .sim-opp-card {
+      background: #fff; border: 1.5px solid #e2e8f0; border-radius: 10px; padding: 16px;
+      position: relative; transition: box-shadow .2s, border-color .2s;
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .sim-opp-card:hover { box-shadow: 0 4px 16px rgba(102,126,234,.13); border-color: #667eea; }
+    .sim-opp-card.rank-1 { border-color: #d69e2e; background: linear-gradient(135deg,#fffff0 0%,#fff 100%); }
+    .sim-opp-card.rank-2 { border-color: #a0aec0; background: linear-gradient(135deg,#f7fafc 0%,#fff 100%); }
+    .sim-opp-card.rank-3 { border-color: #c6b8a8; background: linear-gradient(135deg,#fffaf5 0%,#fff 100%); }
+    .sim-opp-rank {
+      position: absolute; top: 10px; right: 12px;
+      font-size: 0.62rem; font-weight: 700; letter-spacing: .04em; padding: 2px 7px;
+      border-radius: 8px;
+    }
+    .rank-1 .sim-opp-rank { background: #fef3c7; color: #b7791f; }
+    .rank-2 .sim-opp-rank { background: #e2e8f0; color: #4a5568; }
+    .rank-3 .sim-opp-rank { background: #ede0d0; color: #7b5e3f; }
+    .sim-opp-route { font-size: 1rem; font-weight: 700; color: #1a202c; letter-spacing: .02em; }
+    .sim-opp-time  { font-size: 0.82rem; color: #667eea; font-weight: 600; }
+    .sim-opp-meta  { font-size: 0.74rem; color: #718096; }
+    .sim-opp-metrics {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 6px; background: #f7fafc;
+      border-radius: 7px; padding: 8px 10px; margin-top: 2px;
+    }
+    .sim-opp-metric-label { font-size: 0.66rem; color: #a0aec0; text-transform: uppercase; letter-spacing: .04em; }
+    .sim-opp-metric-val   { font-size: 0.9rem; font-weight: 700; color: #1a202c; }
+    .sim-opp-metric-val.green { color: #38a169; }
+    .sim-opp-use {
+      background: #667eea; color: #fff; border: none; border-radius: 7px;
+      padding: 7px 0; font-size: 0.78rem; font-weight: 600; cursor: pointer;
+      transition: background .2s; width: 100%; margin-top: 2px;
+    }
+    .sim-opp-use:hover { background: #5a67d8; }
+    .sim-opp-slot { font-size: 0.7rem; color: #718096; font-style: italic; }
+    .sim-opp-score-bar { height: 4px; border-radius: 2px; background: #e2e8f0; overflow: hidden; }
+    .sim-opp-score-fill { height: 100%; border-radius: 2px; background: linear-gradient(90deg,#667eea,#38a169); transition: width .6s cubic-bezier(.4,0,.2,1); }
+    .sim-sep { border: none; border-top: 1px solid #e2e8f0; margin: 16px 0; }
+    .sim-manual-label { font-size: 0.72rem; color: #718096; text-transform: uppercase; letter-spacing:.05em; margin-bottom: 12px; }
+    /* skeleton shimmer for opp cards */
+    .sim-opp-skel { background: #f7fafc; border: 1.5px solid #e2e8f0; border-radius: 10px; padding: 16px; }
+    .skel-line { background: linear-gradient(90deg,#e2e8f0 25%,#f7fafc 50%,#e2e8f0 75%);
+      background-size: 200% 100%; animation: shimmer 1.4s infinite; border-radius: 4px; }
+
+    /* ── Sim auto-fill banner ── */
+    #sim-autofill-banner {
+      display: none; align-items: center; gap: 10px; justify-content: space-between;
+      background: linear-gradient(90deg,#ebf4ff,#f0fff4); border: 1px solid #bee3f8;
+      border-radius: 8px; padding: 8px 14px; margin-bottom: 14px; font-size: 0.8rem; color: #2b6cb0;
+    }
+    #sim-autofill-banner.visible { display: flex; animation: fadeIn .3s ease; }
+    .sim-autofill-pills { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .sim-autofill-pill {
+      background: #fff; border: 1px solid #bee3f8; border-radius: 10px;
+      padding: 1px 8px; font-size: 0.72rem; font-weight: 600; color: #2c5282;
+    }
+    .sim-autofill-dismiss {
+      background: none; border: none; cursor: pointer; color: #a0aec0;
+      font-size: 1rem; line-height: 1; padding: 0 2px; flex-shrink: 0;
+    }
+    .sim-autofill-dismiss:hover { color: #718096; }
+    @keyframes autofill-glow {
+      0%  { box-shadow: 0 0 0 0 rgba(102,126,234,.5); border-color: #667eea; }
+      70% { box-shadow: 0 0 0 5px rgba(102,126,234,0); border-color: #667eea; }
+      100%{ box-shadow: 0 0 0 0 rgba(102,126,234,0); }
+    }
+    .sim-field-autofilled { animation: autofill-glow .8s ease; border-color: #667eea !important; }
+
+    /* ── Sim panel AI analysis section ── */
+    .sim-ai-section {
+      margin-top: 18px; border-top: 1px solid #e2e8f0; padding-top: 16px;
+    }
+    .sim-ai-header {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
+    }
+    .sim-ai-header-label {
+      font-size: 0.72rem; font-weight: 600; color: #718096; text-transform: uppercase; letter-spacing: .05em;
+    }
+    .sim-ai-typing-dot {
+      display: inline-flex; gap: 3px; align-items: center;
+    }
+    .sim-ai-typing-dot span {
+      width: 5px; height: 5px; border-radius: 50%; background: #667eea;
+      animation: bounce 1.2s infinite ease-in-out;
+    }
+    .sim-ai-typing-dot span:nth-child(2) { animation-delay: .15s; }
+    .sim-ai-typing-dot span:nth-child(3) { animation-delay: .30s; }
+    @keyframes bounce { 0%,80%,100%{transform:scale(.6);opacity:.4} 40%{transform:scale(1);opacity:1} }
+    .sim-ai-headline {
+      font-size: 0.92rem; font-weight: 700; color: #2d3748; margin-bottom: 8px;
+    }
+    .sim-ai-narrative {
+      font-size: 0.84rem; color: #4a5568; line-height: 1.6; margin-bottom: 12px;
+    }
+    .sim-ai-actions { list-style: none; padding: 0; margin: 0 0 14px 0; display: flex; flex-direction: column; gap: 6px; }
+    .sim-ai-action {
+      display: flex; align-items: flex-start; gap: 8px;
+      background: #ebf4ff; border: 1px solid #bee3f8; border-radius: 7px;
+      padding: 8px 11px; font-size: 0.8rem; color: #2b6cb0;
+    }
+    .sim-ai-action::before { content: "→"; font-weight: 700; flex-shrink: 0; }
+    .sim-ai-confidence {
+      font-size: 0.72rem; color: #a0aec0; display: flex; align-items: center; gap: 6px; margin-bottom: 14px;
+    }
+    .sim-ai-conf-badge {
+      padding: 1px 7px; border-radius: 8px; font-weight: 600; font-size: 0.68rem; text-transform: uppercase;
+    }
+    .sim-ai-conf-badge.high   { background: #c6f6d5; color: #276749; }
+    .sim-ai-conf-badge.medium { background: #fef3c7; color: #b7791f; }
+    .sim-ai-conf-badge.low    { background: #fed7d7; color: #c53030; }
+
+    /* Mini follow-up chat in sim panel */
+    .sim-chat-bar {
+      display: flex; gap: 8px; margin-top: 10px; border-top: 1px solid #e2e8f0; padding-top: 12px;
+    }
+    .sim-chat-input {
+      flex: 1; background: #f7fafc; border: 1px solid #cbd5e0; border-radius: 8px;
+      padding: 8px 12px; font-size: 0.82rem; color: #1a202c; outline: none; transition: border .2s;
+    }
+    .sim-chat-input:focus { border-color: #667eea; background: #fff; }
+    .sim-chat-send {
+      background: #667eea; color: #fff; border: none; border-radius: 8px;
+      padding: 8px 14px; font-size: 0.82rem; font-weight: 600; cursor: pointer; transition: background .2s; white-space: nowrap;
+    }
+    .sim-chat-send:hover { background: #5a67d8; }
+    .sim-chat-thread { margin-top: 10px; display: flex; flex-direction: column; gap: 10px; }
+    .sim-chat-bubble {
+      padding: 10px 13px; border-radius: 10px; font-size: 0.82rem; line-height: 1.55; max-width: 100%;
+    }
+    .sim-chat-bubble.user { background: #ebf4ff; color: #2b6cb0; align-self: flex-end; border-radius: 10px 10px 2px 10px; }
+    .sim-chat-bubble.ai   { background: #f7fafc; color: #2d3748; border: 1px solid #e2e8f0; border-radius: 2px 10px 10px 10px; }
+
     footer { text-align: center; color: #cbd5e0; font-size: 0.75rem; padding: 24px; }
 
     /* ── Workspace Layout (Chat + Brain side-by-side) ── */
@@ -252,51 +445,52 @@
 
     /* ── Brain Panel (always-on KG) ── */
     .brain-panel {
-      background: #0d1117; border: 1px solid #21262d; border-radius: 12px;
-      overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,.25);
+      background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
+      overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,.06);
       display: flex; flex-direction: column;
       height: calc(100vh - 132px); min-height: 520px;
     }
     .brain-panel-header {
       display: flex; align-items: center; justify-content: space-between;
-      padding: 10px 14px; background: #161b22; border-bottom: 1px solid #21262d;
+      padding: 10px 14px; background: #fff; border-bottom: 1px solid #e2e8f0;
       flex-shrink: 0;
     }
     .brain-panel-header h2 {
-      font-size: .69rem; color: #8b949e; letter-spacing: .06em; text-transform: uppercase;
-      display: flex; align-items: center; gap: 6px;
+      font-size: .69rem; color: #718096; letter-spacing: .06em; text-transform: uppercase;
+      display: flex; align-items: center; gap: 6px; font-weight: 600;
     }
     .brain-pulse {
-      width: 8px; height: 8px; border-radius: 50%; background: #238636;
+      width: 8px; height: 8px; border-radius: 50%; background: #38a169;
       animation: bpulse 2.4s ease-in-out infinite;
     }
     @keyframes bpulse { 0%,100%{opacity:1} 50%{opacity:.3} }
     .brain-header-btns { display: flex; gap: 6px; }
     .brain-btn {
-      background: #21262d; border: 1px solid #30363d; border-radius: 5px;
-      color: #8b949e; font-size: 0.68rem; padding: 3px 8px; cursor: pointer;
+      background: transparent; border: 1px solid #cbd5e0; border-radius: 8px;
+      color: #718096; font-size: 0.68rem; padding: 3px 10px; cursor: pointer;
+      transition: border-color .15s, color .15s;
     }
-    .brain-btn:hover { background: #30363d; color: #c9d1d9; }
+    .brain-btn:hover { border-color: #667eea; color: #667eea; background: #f0f4ff; }
     .brain-status {
-      padding: 5px 12px; background: #161b22; border-bottom: 1px solid #21262d;
-      font-size: 0.67rem; color: #8b949e; min-height: 26px;
+      padding: 5px 12px; background: #f7fafc; border-bottom: 1px solid #e2e8f0;
+      font-size: 0.67rem; color: #718096; min-height: 26px;
       display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex-shrink: 0;
     }
     .brain-hl-tag {
       display: inline-flex; align-items: center; gap: 3px;
-      background: #1f2d1a; border: 1px solid #2ea043; border-radius: 10px;
-      padding: 1px 7px; font-size: 0.66rem; color: #3fb950; font-weight: 600;
+      background: #f0fff4; border: 1px solid #9ae6b4; border-radius: 10px;
+      padding: 1px 7px; font-size: 0.66rem; color: #276749; font-weight: 600;
       animation: fadeIn .3s ease;
     }
     .brain-hl-dim {
       display: inline-flex; align-items: center; gap: 3px;
-      background: #1c1a14; border: 1px solid #6e5a00; border-radius: 10px;
-      padding: 1px 7px; font-size: 0.66rem; color: #e3b341;
+      background: #fffff0; border: 1px solid #f6e05e; border-radius: 10px;
+      padding: 1px 7px; font-size: 0.66rem; color: #975a16;
     }
-    #brain-cy { flex: 1; background: #100d08; min-height: 0; overflow: hidden; position: relative; }
+    #brain-cy { flex: 1; background: #0c0b14; min-height: 0; overflow: hidden; position: relative; }
     .brain-footer {
-      padding: 6px 12px; background: #161b22; border-top: 1px solid #21262d;
-      font-size: 0.67rem; color: #8b949e;
+      padding: 6px 12px; background: #f7fafc; border-top: 1px solid #e2e8f0;
+      font-size: 0.67rem; color: #a0aec0;
       display: flex; justify-content: space-between; align-items: center;
       flex-shrink: 0;
     }
@@ -339,6 +533,16 @@
       background: transparent; color: #667eea; border: 1px solid #667eea;
     }
     .graph-btn.outline:hover { background: #eef2ff; }
+    /* Graph auto-load indicator */
+    #graph-auto-badge {
+      display: none; align-items: center; gap: 5px;
+      background: #ebf4ff; border: 1px solid #bee3f8; border-radius: 10px;
+      padding: 2px 9px; font-size: 0.7rem; color: #2b6cb0; font-weight: 500; white-space: nowrap;
+    }
+    #graph-auto-badge.visible { display: inline-flex; animation: fadeIn .3s ease; }
+    #graph-auto-badge button { background:none;border:none;cursor:pointer;color:#90cdf4;font-size:.85rem;padding:0 0 0 3px;line-height:1; }
+    #graph-auto-badge button:hover { color:#2b6cb0; }
+    @keyframes fadeIn { from{opacity:0;transform:translateY(-3px)} to{opacity:1;transform:none} }
     .graph-body { display: flex; height: 500px; }
     #cy { flex: 1; background: #f8fafc; }
     .graph-sidebar {
@@ -418,7 +622,11 @@
         <button class="new-thread-btn" onclick="newThread()">+ New Thread</button>
       </div>
     </div>
+    <!-- Persona selector -->
+    <div class="persona-bar" id="persona-bar"></div>
     <div id="chat-thread" class="empty"></div>
+    <!-- Auto-suggested prompts -->
+    <div class="suggestion-strip" id="suggestion-strip"></div>
     <div class="query-row">
       <input id="q-input" type="text"
              placeholder="e.g. Summarize flights from DXB to BOM — competitor analysis, pax types, timing"
@@ -454,7 +662,7 @@
         <div id="brain-cy"></div>
         <div class="brain-footer">
           <div class="brain-comm-dots" id="brain-comm-dots" title="Community clusters"></div>
-          <span id="brain-footer-stats" style="color:#484f58">—</span>
+          <span id="brain-footer-stats" style="color:#a0aec0">—</span>
         </div>
       </div>
     </div><!-- /brain-col -->
@@ -462,7 +670,30 @@
   </div><!-- /workspace -->
   <div class="sim-panel">
     <h2>🔬 Simulate Add Flight</h2>
+
+    <!-- Smart Opportunities (auto-populated from query context) -->
+    <div id="sim-suggestions">
+      <div class="sim-opp-header">
+        <span class="sim-opp-title">✨ Ranked Opportunities</span>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span id="sim-opp-context" class="sim-opp-context" style="display:none"></span>
+          <button class="sim-opp-refresh" onclick="_refreshSimOpportunities()">↻ Refresh</button>
+        </div>
+      </div>
+      <div class="sim-opp-grid" id="sim-opp-grid"></div>
+      <hr class="sim-sep">
+      <div class="sim-manual-label">Or enter manually:</div>
+    </div>
+
     <div class="sim-form">
+      <!-- Auto-fill banner (shown when chat context populates the form) -->
+      <div id="sim-autofill-banner" style="grid-column:1/-1">
+        <div class="sim-autofill-pills">
+          <span style="font-weight:600">✨ Auto-filled from chat:</span>
+          <span id="sim-autofill-tags"></span>
+        </div>
+        <button class="sim-autofill-dismiss" onclick="_dismissAutofillBanner()" title="Dismiss">✕</button>
+      </div>
       <div><label>Origin (IATA)</label><input id="sim-origin" type="text" placeholder="DXB" maxlength="3" style="text-transform:uppercase" /></div>
       <div><label>Destination (IATA)</label><input id="sim-dest" type="text" placeholder="BOM" maxlength="3" style="text-transform:uppercase" /></div>
       <div><label>Departure (YYYY-MM-DD HH:MM)</label><input id="sim-dep" type="text" placeholder="2024-10-27 08:00" /></div>
@@ -475,7 +706,10 @@
   <!-- Network Graph Visualization (Cytoscape.js) -->
   <div class="graph-panel">
     <div class="graph-panel-header">
-      <h2>🕸️ Network Graph Explorer</h2>
+      <div style="display:flex;align-items:center;gap:10px">
+        <h2>🕸️ Network Graph Explorer</h2>
+        <span id="graph-auto-badge"><span id="graph-auto-badge-text"></span><button onclick="_dismissGraphBadge()" title="Dismiss">✕</button></span>
+      </div>
       <div class="graph-controls">
         <select id="graph-mode" class="graph-input" style="width:110px">
           <option value="hub">Hub View</option>
@@ -565,6 +799,10 @@ function newThread() {
   document.getElementById('session-badge').textContent = 'New session';
   clearAnalysis();
   clearBrainHighlight();
+  _lastGraphKey  = '';   // reset so next query triggers fresh graph load
+  _lastAutofill  = {};   // reset sim autofill dedup
+  _dismissGraphBadge();
+  _dismissAutofillBanner();
   document.getElementById('q-input').focus();
 }
 
@@ -617,6 +855,240 @@ function showTyping() {
 }
 function hideTyping() { const el = document.getElementById('typing'); if (el) el.remove(); }
 
+// ── Personas ─────────────────────────────────────────────────────────────────
+const PERSONAS = {
+  route: {
+    icon: '🛣️', name: 'Route Analyst', color: '#0ea5e9',
+    desc: 'Route metrics, capacity & competition',
+    basePrompts: [
+      { icon: '📊', text: 'Which routes have the highest weekly frequency?' },
+      { icon: '✈️', text: 'Compare EK and FZ capacity on DXB–BOM routes' },
+      { icon: '🔍', text: 'Show underserved O&D markets with fewer than 7 weekly flights' },
+      { icon: '🌙', text: 'List all widebody departures from DXB between 20:00 and 02:00' },
+    ],
+    entityFn: codes => {
+      const c = codes[0] || 'DXB';
+      const c2 = codes[1] || 'LHR';
+      return [
+        { icon: '📊', text: `Top 10 routes from ${c} by weekly seat capacity` },
+        { icon: '🏁', text: `Competitor analysis on routes out of ${c}` },
+        { icon: '✈️', text: `Aircraft type breakdown for ${c} long-haul departures` },
+        { icon: '⏱️', text: `Average block time comparison: ${c} vs ${c2}` },
+      ];
+    }
+  },
+  network: {
+    icon: '🌐', name: 'Network Strategist', color: '#667eea',
+    desc: 'Hub topology, gaps & expansion',
+    basePrompts: [
+      { icon: '📡', text: 'Which airports have the highest betweenness centrality?' },
+      { icon: '🗺️', text: 'Show the top 5 unserved high-demand O&D pairs' },
+      { icon: '🔗', text: 'Map the Gulf hub cluster and their connecting flows' },
+      { icon: '🧩', text: 'Which airport communities are most tightly linked in the graph?' },
+    ],
+    entityFn: codes => {
+      const c = codes[0] || 'DXB';
+      const multi = codes.slice(0, 3).join(', ') || c;
+      return [
+        { icon: '📡', text: `Hub tier and PageRank score for ${c}` },
+        { icon: '🌱', text: `Growth potential airports in the ${c} community cluster` },
+        { icon: '🔗', text: `All single-stop connections through ${c}` },
+        { icon: '⚖️', text: `Network connectivity comparison: ${multi}` },
+      ];
+    }
+  },
+  ops: {
+    icon: '⚙️', name: 'Ops Manager', color: '#64748b',
+    desc: 'Fleet, turnarounds & curfews',
+    basePrompts: [
+      { icon: '🛩️', text: 'Which aircraft types have the highest daily utilization?' },
+      { icon: '⏳', text: 'Are there flights violating minimum ground time rules?' },
+      { icon: '🌑', text: 'Which airports have strict night curfews affecting the schedule?' },
+      { icon: '📐', text: 'Block time variance: B77W versus A388 on long-haul routes' },
+    ],
+    entityFn: codes => {
+      const c = codes[0] || 'DXB';
+      return [
+        { icon: '⏳', text: `Minimum turnaround times for operations at ${c}` },
+        { icon: '🛩️', text: `Aircraft types operating most frequently through ${c}` },
+        { icon: '🌑', text: `Night curfew restrictions at ${c} affecting operations` },
+        { icon: '📐', text: `Ground time distribution for flights transiting ${c}` },
+      ];
+    }
+  },
+  revenue: {
+    icon: '💰', name: 'Revenue Manager', color: '#059669',
+    desc: 'Yield opportunities & market share',
+    basePrompts: [
+      { icon: '👑', text: 'Which routes are monopoly markets (single carrier)?' },
+      { icon: '⚔️', text: 'Where do LCCs compete directly with FSCs on same O&D?' },
+      { icon: '📅', text: 'Which seasonal peaks show the highest frequency concentration?' },
+      { icon: '📊', text: 'FSC vs LCC seat capacity split on Gulf short-haul routes' },
+    ],
+    entityFn: codes => {
+      const c = codes[0] || 'DXB';
+      return [
+        { icon: '📊', text: `Airline market share on routes from ${c}` },
+        { icon: '👑', text: `Monopoly and duopoly routes out of ${c}` },
+        { icon: '⚔️', text: `LCC vs FSC capacity split for ${c} short-haul` },
+        { icon: '💡', text: `Underserved revenue opportunity routes from ${c}` },
+      ];
+    }
+  },
+  alliance: {
+    icon: '🤝', name: 'Alliance Director', color: '#d97706',
+    desc: 'Codeshare, interline & partnerships',
+    basePrompts: [
+      { icon: '🌐', text: 'Which alliance groupings have the best combined network coverage?' },
+      { icon: '🔀', text: 'Show codeshare opportunities between EK and FZ on thin routes' },
+      { icon: '🤝', text: 'Which carrier pairs share the most routes — partnership targets?' },
+      { icon: '🔗', text: 'Interline potential for connecting traffic beyond Gulf hubs' },
+    ],
+    entityFn: codes => {
+      const c = codes[0] || 'DXB';
+      return [
+        { icon: '🌐', text: `Alliance members serving ${c} and combined frequency` },
+        { icon: '🔀', text: `Codeshare opportunities on thin routes out of ${c}` },
+        { icon: '🤝', text: `Carriers at ${c} in the same community cluster` },
+        { icon: '💡', text: `Top 3 partnership opportunities through ${c}` },
+      ];
+    }
+  }
+};
+
+let currentPersona = null;
+let _lastQuery  = '';   // most recent user question
+let _lastAnswer = '';   // most recent AI answer
+let _suggestAbort = null; // AbortController for in-flight suggest requests
+
+function _initPersonaBar() {
+  const bar = document.getElementById('persona-bar');
+  if (!bar) return;
+  bar.innerHTML = '';
+  Object.entries(PERSONAS).forEach(([key, p]) => {
+    const pill = document.createElement('button');
+    pill.className = 'persona-pill';
+    pill.dataset.key = key;
+    pill.innerHTML = `<span class="persona-pill-icon">${p.icon}</span>${p.name}`;
+    pill.title = p.desc;
+    pill.onclick = () => selectPersona(key);
+    bar.appendChild(pill);
+  });
+}
+
+function selectPersona(key) {
+  currentPersona = key;
+  document.querySelectorAll('.persona-pill').forEach(p => {
+    const isActive = p.dataset.key === key;
+    p.classList.toggle('active', isActive);
+    if (isActive) p.style.background = PERSONAS[key].color;
+    else p.style.background = '';
+  });
+  // If we have previous Q&A context, ask LM for persona-tailored follow-ups
+  if (_lastQuery) {
+    _fetchLMSuggestions(_lastQuery, _lastAnswer, [..._brainHL]);
+  } else {
+    _showStaticSuggestions([..._brainHL]);
+  }
+}
+
+/** Show LM-skeleton then fire /suggest, replace with real chips */
+async function updateSuggestions(highlightedCodes) {
+  if (_lastQuery) {
+    await _fetchLMSuggestions(_lastQuery, _lastAnswer, highlightedCodes || [..._brainHL]);
+  } else {
+    _showStaticSuggestions(highlightedCodes || [..._brainHL]);
+  }
+}
+
+function _showStaticSuggestions(codes) {
+  const strip = document.getElementById('suggestion-strip');
+  if (!strip) return;
+  strip.classList.remove('loading');
+  strip.innerHTML = '';
+
+  const persona = currentPersona ? PERSONAS[currentPersona] : null;
+  if (!persona) {
+    [
+      { icon: '🛣️', text: 'Which routes have the highest weekly frequency?' },
+      { icon: '🌐', text: 'Which airports are the top hubs in this network?' },
+      { icon: '✈️', text: 'Top 10 busiest airlines in the schedule' },
+      { icon: '📊', text: 'Compare EK and FZ capacity on DXB routes' },
+    ].forEach(s => strip.appendChild(_makeChip(s)));
+    return;
+  }
+  const prompts = (codes.length > 0 && persona.entityFn)
+    ? persona.entityFn(codes)
+    : persona.basePrompts;
+  prompts.slice(0, 4).forEach(s => strip.appendChild(_makeChip(s)));
+}
+
+function _showSkeletons() {
+  const strip = document.getElementById('suggestion-strip');
+  if (!strip) return;
+  strip.classList.add('loading');
+  strip.innerHTML = '';
+  [120, 160, 140, 110].forEach(w => {
+    const sk = document.createElement('span');
+    sk.className = 'suggestion-skeleton';
+    sk.style.width = w + 'px';
+    strip.appendChild(sk);
+  });
+}
+
+async function _fetchLMSuggestions(query, answer, entities) {
+  // Cancel any in-flight request
+  if (_suggestAbort) { try { _suggestAbort.abort(); } catch {} }
+  _suggestAbort = new AbortController();
+
+  _showSkeletons();
+  try {
+    const body = { query, answer: answer.slice(0, 600), persona: currentPersona, entities };
+    const resp = await fetch(`${BASE}/api/v1/suggest`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: _suggestAbort.signal,
+    });
+    if (!resp.ok) throw new Error('suggest failed');
+    const data = await resp.json();
+    const questions = data.questions || [];
+
+    const strip = document.getElementById('suggestion-strip');
+    if (!strip) return;
+    strip.classList.remove('loading');
+    strip.innerHTML = '';
+
+    if (questions.length === 0) {
+      _showStaticSuggestions(entities);
+      return;
+    }
+    // Pick an icon based on position for visual variety
+    const icons = ['💡', '🔍', '📊', '🎯'];
+    questions.forEach((q, i) => strip.appendChild(_makeChip({ icon: icons[i % icons.length], text: q })));
+  } catch (e) {
+    if (e.name === 'AbortError') return; // cancelled — no-op
+    // On any error fall back to static suggestions
+    _showStaticSuggestions(entities);
+  }
+}
+
+function _makeChip({ icon, text }) {
+  const chip = document.createElement('button');
+  chip.className = 'suggestion-chip';
+  chip.innerHTML = `<span class="suggestion-chip-icon">${icon}</span>${escHtml(text)}`;
+  chip.onclick = () => clickSuggestion(text);
+  return chip;
+}
+
+function clickSuggestion(text) {
+  const inp = document.getElementById('q-input');
+  if (!inp) return;
+  inp.value = text;
+  inp.focus();
+  askQuery();
+}
+
 // ── Query ───────────────────────────────────────────────────────────────────
 async function askQuery() {
   const q = document.getElementById('q-input').value.trim();
@@ -630,6 +1102,7 @@ async function askQuery() {
   try {
     const body = { query: q };
     if (currentSessionId) body.session_id = currentSessionId;
+    if (currentPersona) body.persona = currentPersona;
     const r = await fetch(`${BASE}/api/v1/query`, {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify(body)
@@ -647,9 +1120,27 @@ async function askQuery() {
       time: r.response_time,
     });
 
+    // Store Q&A context for LM suggestion generation
+    _lastQuery  = q;
+    _lastAnswer = r.answer || '';
+
     // Highlight query-relevant nodes in the Brain graph
     const codes = extractCodesFromResponse(r);
     if (codes.length > 0) highlightQuery(codes);
+
+    // Fire LM-powered suggestions in background (non-blocking)
+    _fetchLMSuggestions(q, _lastAnswer, codes.length > 0 ? codes : [..._brainHL]);
+
+    // Update sim-panel smart opportunities from detected route in response
+    const routeCtx = _detectRouteFromContext();
+    if (routeCtx) updateSimOpportunities(routeCtx.origin, routeCtx.dest);
+
+    // Auto-fill sim form from flight details mentioned in chat
+    const simParams = _extractFlightParams(`${q} ${_lastAnswer}`);
+    _autoFillSimForm(simParams);
+
+    // Auto-populate graph panel view from chat context
+    _autoLoadGraph(simParams);
 
     // Render visualizations in the full-width analysis panel
     if (r.visualizations && r.visualizations.length) {
@@ -1043,7 +1534,295 @@ function escHtml(s) {
   return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// ── Sim Form Auto-fill from Chat Thread ────────────────────────────────────
+
+// Known aircraft type patterns (ICAO/common codes)
+const _AC_PATTERN = /\b(77W|77L|77F|789|788|787|73H|73N|73G|73J|738|737|388|387|359|35K|32A|321|320|319|318|7M8|7M9|E90|E95|AT7|DH4|CRJ|B77W|B787|B737|A380|A350|A321|A320|A319)\b/i;
+
+// Known 2-letter airline codes
+const _AL_PATTERN = /\b(EK|FZ|QR|EY|SV|GF|MS|TK|LH|BA|AF|KL|UA|AA|DL|SQ|CX|AI|9W|G8|6E|WB|AK|OZ|NH|JL|MH|TG|VN|GA|PK|UL|ET|KQ|RJ|WY|ME|GF|IR|AT|IB|AZ|SK|AY|OS|LX|RO|OK|SN|HV|VY|FR|U2|EZY)\b/;
+
+// Stop-words that look like IATA but aren't airports
+const _IATA_STOP = new Set(['THE','AND','FOR','NOT','ARE','HAS','ITS','ALL','ANY','CAN','MAY','BUT','HOW','WHO','WHY','WAS','HAD','HER','HIM','HIS','SHE','YOU','YES','GET','GOT','SET','LET','PUT','USE','RUN','NEW','OLD','NOW','DAY','WAY','SAY','SEE','FLY','AIR','PAX','LCC','FSC','HUB','OAL']);
+
+function _extractFlightParams(text) {
+  const params = {};
+
+  // 1. Aircraft type
+  const acM = text.match(_AC_PATTERN);
+  if (acM) params.aircraft_type = acM[1].toUpperCase();
+
+  // 2. Airline 2-letter code
+  const alM = text.match(_AL_PATTERN);
+  if (alM) params.airline = alM[1].toUpperCase();
+
+  // 3. Departure time (HH:MM)
+  const timeM = text.match(/\b([0-1]?\d|2[0-3]):[0-5]\d\b/);
+  if (timeM) params.dep_time = timeM[0];
+
+  // 4. Departure date (YYYY-MM-DD)
+  const dateM = text.match(/\b(20\d{2}-\d{2}-\d{2})\b/);
+  if (dateM) params.dep_date = dateM[1];
+
+  // 5. Route — try explicit arrow/dash/word patterns first, then proximity
+  const validIata = code => code.length === 3 && !_IATA_STOP.has(code) &&
+    (window._brainNodes ? window._brainNodes.has(code) : /^[A-Z]{3}$/.test(code));
+
+  const routePats = [
+    /\b([A-Z]{3})\s*(?:–|—|→|->|to)\s*([A-Z]{3})\b/g,
+    /from\s+([A-Z]{3})\s+to\s+([A-Z]{3})/gi,
+    /\b([A-Z]{3})[–\-]([A-Z]{3})\b/g,
+  ];
+  for (const pat of routePats) {
+    let m;
+    while ((m = pat.exec(text)) !== null) {
+      const o = m[1].toUpperCase(), d = m[2].toUpperCase();
+      if (validIata(o) && validIata(d) && o !== d) {
+        params.origin = o; params.destination = d; break;
+      }
+    }
+    if (params.origin) break;
+  }
+
+  // Fallback: any two valid IATA codes close together in the text
+  if (!params.origin) {
+    const allCodes = [...(text.matchAll(/\b([A-Z]{3})\b/g) || [])]
+      .map(m => m[1]).filter(validIata);
+    const uniq = [...new Set(allCodes)];
+    if (uniq.length >= 2) { params.origin = uniq[0]; params.destination = uniq[1]; }
+  }
+
+  return params;
+}
+
+// Track what was last auto-filled so we don't flash for same data
+let _lastAutofill = {};
+
+function _autoFillSimForm(params) {
+  // Need at least an origin to be useful
+  if (!params.origin && !params.destination) return;
+
+  // Don't re-fill if same as last autofill
+  const key = JSON.stringify(params);
+  if (key === JSON.stringify(_lastAutofill)) return;
+  _lastAutofill = { ...params };
+
+  const fields = [
+    { id: 'sim-origin',  val: params.origin },
+    { id: 'sim-dest',    val: params.destination },
+    { id: 'sim-ac',      val: params.aircraft_type },
+    { id: 'sim-airline', val: params.airline },
+  ];
+
+  // Build departure datetime
+  if (params.dep_time) {
+    const today = new Date();
+    const sun = new Date(today);
+    sun.setDate(today.getDate() + ((7 - today.getDay()) % 7 || 7));
+    const depDate = params.dep_date || sun.toISOString().slice(0, 10);
+    fields.push({ id: 'sim-dep', val: `${depDate} ${params.dep_time}` });
+  }
+
+  const filled = [];
+  fields.forEach(({ id, val }) => {
+    if (!val) return;
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.value = val;
+    el.classList.remove('sim-field-autofilled');
+    void el.offsetWidth; // reflow to restart animation
+    el.classList.add('sim-field-autofilled');
+    setTimeout(() => el.classList.remove('sim-field-autofilled'), 900);
+    filled.push(val);
+  });
+
+  if (filled.length) _showAutofillBanner(params, filled);
+
+  // Also trigger opportunity refresh for the detected route
+  if (params.origin && params.destination) {
+    updateSimOpportunities(params.origin, params.destination);
+  }
+}
+
+function _showAutofillBanner(params, filled) {
+  const banner = document.getElementById('sim-autofill-banner');
+  const tags   = document.getElementById('sim-autofill-tags');
+  if (!banner || !tags) return;
+  tags.innerHTML = filled.map(v => `<span class="sim-autofill-pill">${escHtml(v)}</span>`).join('');
+  banner.classList.add('visible');
+}
+
+function _dismissAutofillBanner() {
+  const b = document.getElementById('sim-autofill-banner');
+  if (b) b.classList.remove('visible');
+}
+
+// ── Graph panel auto-population from chat ──────────────────────────────────
+
+let _lastGraphKey = '';  // dedup: don't reload same view twice
+
+function _autoLoadGraph(params) {
+  // Determine best view mode from params
+  const hasRoute   = params.origin && params.destination;
+  const hasAirline = params.airline;
+  const hasHub     = params.origin && !params.destination;
+
+  let mode, label;
+  if (hasRoute) {
+    mode  = 'route';
+    label = `Route · ${params.origin} → ${params.destination}`;
+  } else if (hasAirline && !hasRoute) {
+    mode  = 'airline';
+    label = `Airline · ${params.airline}`;
+  } else if (hasHub) {
+    mode  = 'hub';
+    label = `Hub · ${params.origin}`;
+  } else {
+    return; // not enough context
+  }
+
+  // Dedup — skip if already loaded this exact view
+  const key = `${mode}|${label}`;
+  if (key === _lastGraphKey) return;
+  _lastGraphKey = key;
+
+  // Set mode selector
+  const modeEl = document.getElementById('graph-mode');
+  if (!modeEl) return;
+  modeEl.value = mode;
+  modeEl.dispatchEvent(new Event('change')); // triggers input visibility logic
+
+  // Fill inputs
+  if (mode === 'route') {
+    document.getElementById('g-airport').value = params.origin;
+    document.getElementById('g-dest').value    = params.destination;
+  } else if (mode === 'airline') {
+    document.getElementById('g-airline').value = params.airline;
+  } else if (mode === 'hub') {
+    document.getElementById('g-airport').value = params.origin;
+  }
+
+  // Show badge
+  const badge = document.getElementById('graph-auto-badge');
+  const text  = document.getElementById('graph-auto-badge-text');
+  if (badge && text) {
+    text.textContent = `← from chat: ${label}`;
+    badge.classList.add('visible');
+  }
+
+  // Auto-load — wait for DOM paint so #cy has dimensions, pass silent to suppress alerts
+  requestAnimationFrame(() => loadGraph({ silent: true }));
+}
+
+function _dismissGraphBadge() {
+  const b = document.getElementById('graph-auto-badge');
+  if (b) b.classList.remove('visible');
+}
+
 // ── Simulation ──────────────────────────────────────────────────────────────
+
+// State for smart opportunities
+let _simOppOrigin = '', _simOppDest = '', _simOppAbort = null;
+
+function _detectRouteFromContext() {
+  // Priority 1: highlighted brain nodes (if exactly 2)
+  const hlSet = window._brainHL || new Set();
+  const hlArr = [...hlSet];
+  if (hlArr.length === 2) return { origin: hlArr[0], dest: hlArr[1] };
+
+  // Priority 2: extract 2 IATA codes from last query/answer
+  const text = (window._lastQuery || '') + ' ' + (window._lastAnswer || '');
+  const codes = [...new Set(text.match(/\b[A-Z]{3}\b/g) || [])];
+  const iata  = codes.filter(c => c !== 'THE' && c !== 'AND' && c !== 'FOR' && c !== 'NOT'
+    && c !== 'ARE' && c !== 'HAS' && c !== 'ITS' && c !== 'ALL' && c !== 'ANY');
+  if (iata.length >= 2) return { origin: iata[0], dest: iata[1] };
+
+  return null;
+}
+
+async function updateSimOpportunities(origin, dest) {
+  if (!origin || !dest) return;
+  origin = origin.toUpperCase(); dest = dest.toUpperCase();
+  if (origin === _simOppOrigin && dest === _simOppDest) return; // same context, skip
+  _simOppOrigin = origin; _simOppDest = dest;
+
+  const wrap = document.getElementById('sim-suggestions');
+  const grid = document.getElementById('sim-opp-grid');
+  const ctx  = document.getElementById('sim-opp-context');
+  wrap.style.display = 'block';
+  ctx.style.display  = 'inline-block';
+  ctx.textContent    = `${origin} → ${dest}`;
+
+  // Show skeleton cards
+  grid.innerHTML = [1,2,3].map(() => `
+    <div class="sim-opp-skel">
+      <div class="skel-line" style="height:14px;width:60%;margin-bottom:10px"></div>
+      <div class="skel-line" style="height:10px;width:40%;margin-bottom:8px"></div>
+      <div class="skel-line" style="height:52px;width:100%;margin-bottom:8px;border-radius:7px"></div>
+      <div class="skel-line" style="height:30px;width:100%;border-radius:7px"></div>
+    </div>`).join('');
+
+  if (_simOppAbort) _simOppAbort.abort();
+  _simOppAbort = new AbortController();
+  try {
+    const r = await fetch(`${BASE}/api/v1/flight-opportunities?origin=${origin}&destination=${dest}`,
+      { signal: _simOppAbort.signal }).then(r => r.json());
+
+    const opps = r.opportunities || [];
+    if (!opps.length) {
+      grid.innerHTML = '<p style="color:#a0aec0;font-size:.8rem;grid-column:1/-1">No opportunities found for this route.</p>';
+      return;
+    }
+    grid.innerHTML = opps.map(o => _renderOppCard(o)).join('');
+  } catch(e) {
+    if (e.name === 'AbortError') return;
+    grid.innerHTML = '<p style="color:#fc8181;font-size:.8rem;grid-column:1/-1">Could not load opportunities.</p>';
+  }
+}
+
+function _renderOppCard(o) {
+  const pct = Math.min(100, Math.max(8, Math.round(o.opportunity_score / 42 * 100)));
+  const fmt = n => n >= 1000 ? `$${(n/1000).toFixed(1)}k` : `$${n}`;
+  return `
+    <div class="sim-opp-card rank-${o.rank}">
+      <span class="sim-opp-rank">#${o.rank} ${['🥇','🥈','🥉'][o.rank-1]}</span>
+      <div class="sim-opp-route">${escHtml(o.origin)} → ${escHtml(o.destination)}</div>
+      <div class="sim-opp-time">⏱ ${escHtml(o.departure_time)} dep</div>
+      <div class="sim-opp-slot">${escHtml(o.slot_label)} · ${o.gap_hours}h gap · ${escHtml(o.aircraft_type)}</div>
+      <div class="sim-opp-score-bar"><div class="sim-opp-score-fill" style="width:${pct}%"></div></div>
+      <div class="sim-opp-metrics">
+        <div>
+          <div class="sim-opp-metric-label">Est. Pax</div>
+          <div class="sim-opp-metric-val">${o.est_pax}</div>
+        </div>
+        <div>
+          <div class="sim-opp-metric-label">Est. Revenue</div>
+          <div class="sim-opp-metric-val green">${fmt(o.est_revenue)}</div>
+        </div>
+      </div>
+      <button class="sim-opp-use" onclick="_useOpportunity(${JSON.stringify(o).replace(/"/g,'&quot;')})">Use this ↗</button>
+    </div>`;
+}
+
+function _useOpportunity(o) {
+  document.getElementById('sim-origin').value  = o.origin;
+  document.getElementById('sim-dest').value    = o.destination;
+  document.getElementById('sim-dep').value     = o.departure_local;
+  document.getElementById('sim-ac').value      = o.aircraft_type;
+  document.getElementById('sim-airline').value = o.airline;
+  document.getElementById('sim-result').style.display = 'none';
+  _dismissAutofillBanner();
+  _lastAutofill = {}; // allow banner to show fresh for opportunity
+  _autoFillSimForm({ origin: o.origin, destination: o.destination, aircraft_type: o.aircraft_type, airline: o.airline, dep_time: o.departure_time, dep_date: o.departure_local.slice(0,10) });
+  document.querySelector('.sim-btn').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function _refreshSimOpportunities() {
+  _simOppOrigin = ''; _simOppDest = '';
+  const route = _detectRouteFromContext();
+  if (route) updateSimOpportunities(route.origin, route.dest);
+}
+
 async function runSim() {
   const origin  = document.getElementById('sim-origin').value.trim().toUpperCase();
   const dest    = document.getElementById('sim-dest').value.trim().toUpperCase();
@@ -1057,33 +1836,148 @@ async function runSim() {
   box.innerHTML = '<p style="color:#718096;font-size:.85rem">Running simulation…</p>';
 
   try {
+    const flightProposal = { origin, destination: dest, departure_local: dep, aircraft_type: ac, airline };
     const r = await fetch(`${BASE}/api/v1/simulate/add-flight`, {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ origin, destination: dest, departure_local: dep, aircraft_type: ac, airline })
+      body: JSON.stringify(flightProposal)
     }).then(r => r.json());
 
-    const fScore = r.feasibility_score ?? '—';
-    const nScore = r.network_value_score ?? '—';
-    const verdict = r.verdict || r.overall_verdict || 'No verdict';
+    const fScore    = r.feasibility_score ?? '—';
+    const nScore    = r.network_value_score ?? '—';
+    const verdict   = r.verdict || r.overall_verdict || 'No verdict';
     const violations = r.violations || [];
     const warnings   = r.warnings   || [];
     const risks      = r.risks      || [];
     const alts       = r.alternatives || [];
 
+    const fColor = typeof fScore === 'number' ? (fScore >= 70 ? '#38a169' : fScore >= 40 ? '#d69e2e' : '#e53e3e') : '#718096';
+    const nColor = typeof nScore === 'number' ? (nScore >= 70 ? '#38a169' : nScore >= 40 ? '#d69e2e' : '#e53e3e') : '#718096';
+
     box.innerHTML = `
       <div class="score-row">
-        <div class="score-box"><div class="score-val">${fScore}</div><div class="score-lbl">Feasibility</div></div>
-        <div class="score-box"><div class="score-val">${nScore}</div><div class="score-lbl">Network Value</div></div>
+        <div class="score-box"><div class="score-val" style="color:${fColor}">${fScore}</div><div class="score-lbl">Feasibility</div></div>
+        <div class="score-box"><div class="score-val" style="color:${nColor}">${nScore}</div><div class="score-lbl">Network Value</div></div>
       </div>
       <div class="verdict">${escHtml(verdict)}</div>
       ${violations.length ? `<div class="tag-list">${violations.map(v => `<span class="tag violation">✕ ${escHtml(String(v))}</span>`).join('')}</div>` : ''}
       ${warnings.length   ? `<div class="tag-list">${warnings.map(w => `<span class="tag warning">⚠ ${escHtml(String(w))}</span>`).join('')}</div>` : ''}
       ${risks.length      ? `<div style="margin-top:10px;font-size:0.82rem;color:#718096"><strong>Risks:</strong> ${risks.slice(0,3).map(x=>escHtml(String(x))).join(' · ')}</div>` : ''}
       ${alts.length       ? `<div style="margin-top:6px;font-size:0.82rem;color:#718096"><strong>Alternatives:</strong> ${alts.slice(0,2).map(x=>escHtml(String(x))).join(' · ')}</div>` : ''}
+      <div class="sim-ai-section">
+        <div class="sim-ai-header">
+          <span class="sim-ai-header-label">🤖 AI Analysis</span>
+          <span id="sim-ai-loader" class="sim-ai-typing-dot"><span></span><span></span><span></span></span>
+        </div>
+        <div id="sim-ai-body"></div>
+        <div class="sim-chat-bar">
+          <input id="sim-chat-input" class="sim-chat-input" placeholder="Ask a follow-up about this simulation… e.g. "What if I use B77W?"" />
+          <button class="sim-chat-send" onclick="_simFollowUp()">Ask AI →</button>
+        </div>
+        <div id="sim-chat-thread" class="sim-chat-thread"></div>
+      </div>
     `;
+    document.getElementById('sim-chat-input').addEventListener('keydown', e => {
+      if (e.key === 'Enter') _simFollowUp();
+    });
+
+    // Store sim context for follow-up questions
+    window._simContext = { flightProposal, simResult: r };
+
+    // Fire AI analysis in background
+    _simAnalyze(flightProposal, r);
+
   } catch(e) {
     box.innerHTML = `<p style="color:#fc8181">Error: ${e.message}</p>`;
   }
+}
+
+async function _simAnalyze(flightProposal, simResult) {
+  const loader = document.getElementById('sim-ai-loader');
+  const body   = document.getElementById('sim-ai-body');
+  if (!body) return;
+
+  try {
+    const ai = await fetch(`${BASE}/api/v1/sim-analyze`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        flight_proposal: flightProposal,
+        sim_result: simResult,
+        persona: currentPersona || ''
+      })
+    }).then(r => r.json());
+
+    if (loader) loader.style.display = 'none';
+
+    const confClass = ai.confidence || 'low';
+    const actionsHtml = (ai.actions || []).length
+      ? `<ul class="sim-ai-actions">${ai.actions.map(a => `<li class="sim-ai-action">${escHtml(a)}</li>`).join('')}</ul>`
+      : '';
+    const confHtml = ai.confidence
+      ? `<div class="sim-ai-confidence">
+          <span class="sim-ai-conf-badge ${confClass}">${confClass}</span>
+          <span>${escHtml(ai.confidence_reason || '')}</span>
+         </div>`
+      : '';
+
+    body.innerHTML = `
+      ${ai.headline ? `<div class="sim-ai-headline">${escHtml(ai.headline)}</div>` : ''}
+      <div class="sim-ai-narrative">${escHtml(ai.narrative || '')}</div>
+      ${actionsHtml}
+      ${confHtml}
+    `;
+  } catch(e) {
+    if (loader) loader.style.display = 'none';
+    if (body) body.innerHTML = `<p style="color:#a0aec0;font-size:.8rem">AI analysis unavailable.</p>`;
+  }
+}
+
+async function _simFollowUp() {
+  const input  = document.getElementById('sim-chat-input');
+  const thread = document.getElementById('sim-chat-thread');
+  if (!input || !thread) return;
+  const q = input.value.trim();
+  if (!q) return;
+  input.value = '';
+
+  // User bubble
+  const ub = document.createElement('div');
+  ub.className = 'sim-chat-bubble user';
+  ub.textContent = q;
+  thread.appendChild(ub);
+
+  // Typing indicator
+  const tb = document.createElement('div');
+  tb.className = 'sim-chat-bubble ai';
+  tb.innerHTML = '<span class="sim-ai-typing-dot"><span></span><span></span><span></span></span>';
+  thread.appendChild(tb);
+  thread.scrollTop = thread.scrollHeight;
+
+  // Build context-enriched question for the main query endpoint
+  const ctx = window._simContext || {};
+  const fp  = ctx.flightProposal || {};
+  const sr  = ctx.simResult      || {};
+  const contextPrefix = fp.origin
+    ? `[Context: Simulation of ${fp.airline || ''} ${fp.origin}→${fp.destination} dep ${fp.departure_local}, ` +
+      `aircraft ${fp.aircraft_type}, feasibility=${sr.feasibility_score}/100, ` +
+      `network_value=${sr.network_value_score}/100. Violations: ${(sr.violations||[]).join('; ') || 'none'}] `
+    : '';
+
+  try {
+    const r = await fetch(`${BASE}/api/v1/query`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        query: contextPrefix + q,
+        session_id: currentSessionId,
+        persona: currentPersona || ''
+      })
+    }).then(r => r.json());
+
+    currentSessionId = r.session_id;
+    tb.innerHTML = escHtml(r.answer || 'No answer.').replace(/\n/g, '<br>');
+  } catch(e) {
+    tb.innerHTML = `<span style="color:#fc8181">Error: ${escHtml(e.message)}</span>`;
+  }
+  thread.scrollTop = thread.scrollHeight;
 }
 
 document.getElementById('q-input').addEventListener('keydown', e => { if (e.key === 'Enter') askQuery(); });
@@ -1103,9 +1997,22 @@ document.getElementById('graph-mode').addEventListener('change', function() {
 
 // ── Cytoscape instance ──────────────────────────────────────────────────────
 let _cy = null;
+let _graphLoading = false;
 
 function initCy(elements) {
-  if (_cy) { _cy.destroy(); _cy = null; }
+  const container = document.getElementById('cy');
+  if (!container) return;
+
+  // Stop all running layouts/animations before destroying to prevent
+  // 'Cannot read properties of null (reading notify)' from pending callbacks
+  if (_cy) {
+    try { _cy.stop(true, true); } catch (_) {}
+    try { _cy.destroy(); }       catch (_) {}
+    _cy = null;
+  }
+
+  // Cytoscape requires the container to have non-zero dimensions
+  if (container.offsetWidth === 0 || container.offsetHeight === 0) return;
   _cy = cytoscape({
     container: document.getElementById('cy'),
     elements,
@@ -1185,27 +2092,31 @@ function initCy(elements) {
   });
 }
 
-async function loadGraph() {
+async function loadGraph(opts = {}) {
+  if (_graphLoading) return;           // prevent concurrent loads
+  _graphLoading = true;
+
+  const silent = opts.silent === true; // suppress alert() for auto-loads
   const mode = document.getElementById('graph-mode').value;
   let url = `${BASE}/api/v1/graph/`;
   if (mode === 'hub') {
     const ap = document.getElementById('g-airport').value.trim().toUpperCase();
-    if (!ap) { alert('Enter an airport code'); return; }
+    if (!ap) { if (!silent) alert('Enter an airport code'); _graphLoading = false; return; }
     url += `hub?airport=${ap}&max_nodes=30`;
   } else if (mode === 'route') {
     const o = document.getElementById('g-airport').value.trim().toUpperCase();
     const d = document.getElementById('g-dest').value.trim().toUpperCase();
-    if (!o || !d) { alert('Enter both Origin and Dest'); return; }
+    if (!o || !d) { if (!silent) alert('Enter both Origin and Dest'); _graphLoading = false; return; }
     url += `route?origin=${o}&dest=${d}`;
   } else {
     const al = document.getElementById('g-airline').value.trim().toUpperCase();
-    if (!al) { alert('Enter an airline code'); return; }
+    if (!al) { if (!silent) alert('Enter an airline code'); _graphLoading = false; return; }
     url += `airline?code=${al}&top_routes=40`;
   }
 
   try {
     const data = await fetch(url).then(r => r.json());
-    if (data.error) { alert('Graph API: ' + data.error); return; }
+    if (data.error) { if (!silent) alert('Graph API: ' + data.error); _graphLoading = false; return; }
     const elems = data.elements;
     const nodes = (elems.nodes || []).map(n => ({ group: 'nodes', data: n.data }));
     const edges = (elems.edges || []).map(e => ({ group: 'edges', data: e.data }));
@@ -1215,27 +2126,29 @@ async function loadGraph() {
     if (data.stats && data.stats.hub_tier)
       document.getElementById('gs-tier').textContent = data.stats.hub_tier;
   } catch(e) {
-    alert('Graph load error: ' + e.message);
+    if (!silent) alert('Graph load error: ' + e.message);
+  } finally {
+    _graphLoading = false;
   }
 }
 
 function resetLayout() {
-  if (_cy) _cy.layout({ name: 'cose', animate: true, animationDuration: 500 }).run();
+  if (_cy) try { _cy.layout({ name: 'cose', animate: true, animationDuration: 500 }).run(); } catch(_) {}
 }
 function fitGraph() {
-  if (_cy) _cy.fit(undefined, 20);
+  if (_cy) try { _cy.fit(undefined, 20); } catch(_) {}
 }
 
 // ── Network Brain — Canvas 2D + d3-force (PyGraphistry-style) ────────────────
 
 const BRAIN_COMM_COLORS = [
-  '#c8934a','#a05830','#d4a020','#7aad5a','#b87a3a',
-  '#c46040','#907858','#b06838','#a06848','#8a7050',
-  '#c07030','#b87848','#7a9060','#d4b890','#907058',
-  '#b84040','#60a5fa','#f87171','#34d399','#a78bfa',
+  '#4e9af1','#e05c97','#2ec4b6','#f7b731','#a55eea',
+  '#4cd964','#ff6b6b','#45aaf2','#fd9644','#26de81',
+  '#fc5c65','#45aaf2','#fed330','#a55eea','#2bcbba',
+  '#eb3b5a','#3867d6','#20bf6b','#fa8231','#8854d0',
 ];
 
-// Entity-type → node fill color (null = use community warm palette)
+// Entity-type → node fill color (null = use community palette)
 const BRAIN_ENTITY_COLORS = {
   Airport:      null,
   Carrier:      '#f472b6',
@@ -1243,15 +2156,15 @@ const BRAIN_ENTITY_COLORS = {
   Alliance:     '#60a5fa',
 };
 
-// Relation → edge stroke color
+// Relation → edge stroke color (vibrant, distinguishable)
 const BRAIN_RELATION_COLORS = {
-  connects:        '#7dd3fc',
+  connects:        '#38bdf8',
   hubs_at:         '#fb923c',
   uses_aircraft:   '#a78bfa',
   operated_by:     '#f472b6',
   codeshares_with: '#fbbf24',
   member_of:       '#e879f9',
-  default:         '#94a3b8',
+  default:         '#64748b',
 };
 
 let _brainCanvas    = null;
@@ -1284,17 +2197,16 @@ function _brainRadius(node) {
 }
 
 function _drawBrainBg(ctx, W, H, tf) {
-  ctx.fillStyle = '#100d08';
+  // PyGraphistry deep-space background: near-black with subtle blue tint
+  ctx.fillStyle = '#0c0b14';
   ctx.fillRect(0, 0, W, H);
-  ctx.save();
-  const gs = 60 * tf.scale;
-  const ox = ((tf.x % gs) + gs) % gs;
-  const oy = ((tf.y % gs) + gs) % gs;
-  ctx.strokeStyle = 'rgba(200,150,80,0.03)';
-  ctx.lineWidth = 0.5;
-  for (let x = ox - gs; x < W + gs; x += gs) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
-  for (let y = oy - gs; y < H + gs; y += gs) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
-  ctx.restore();
+  // Subtle radial vignette — darker at edges, lighter at centre
+  const cx = W/2, cy = H/2;
+  const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(W, H)*0.6);
+  grad.addColorStop(0,   'rgba(30,20,60,0.25)');
+  grad.addColorStop(1,   'rgba(0,0,0,0.55)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
 }
 
 let _brainAutoFit = false;  // set true during loading for smooth continuous zoom-out
@@ -1332,137 +2244,145 @@ function _brainFrame() {
   ctx.translate(tf.x, tf.y);
   ctx.scale(tf.scale, tf.scale);
 
-  // ── Edges ──────────────────────────────────────────────────────────────────
+  // ── Edges: PyGraphistry additive blending ────────────────────────────────
+  // 'lighter' mode: RGB values ADD together — sparse edges barely glow,
+  // dense clusters accumulate into bright nebulae (the PyGraphistry "art form")
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
   _brainEdgeArr.forEach(e => {
-    const src = _brainNodeMap.get(e.source), tgt = _brainNodeMap.get(e.target);
+    // d3-force mutates source/target from string IDs → node objects after first tick
+    const src = typeof e.source === 'object' ? e.source : _brainNodeMap.get(e.source);
+    const tgt = typeof e.target === 'object' ? e.target : _brainNodeMap.get(e.target);
     if (!src || !tgt || src.x == null || tgt.x == null) return;
     const isHL      = hasHL && _brainHL.has(src.id) && _brainHL.has(tgt.id);
     const isPartial = !isHL && hasHL && (_brainHL.has(src.id) || _brainHL.has(tgt.id));
     const dimmed    = hasHL && !isHL && !isPartial;
     const relColor  = BRAIN_RELATION_COLORS[e.relation] || BRAIN_RELATION_COLORS.default;
-    const baseAlpha = e.relation === 'connects' ? 0.82 : 0.92;
-    const alpha     = dimmed ? 0.04*e.opacity : (isHL ? 1.0 : isPartial ? 0.75 : baseAlpha) * e.opacity;
-    if (alpha < 0.01) return;
+    // PyGraphistry: very low per-edge alpha — beauty emerges from density accumulation
+    const baseAlpha = e.relation === 'connects' ? 0.055 : 0.14;
+    const alpha     = dimmed    ? 0.006 * e.opacity
+                    : isHL      ? 0.65  * e.opacity
+                    : isPartial ? 0.22  * e.opacity
+                    : baseAlpha * e.opacity;
+    if (alpha < 0.003) return;
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = isHL ? '#ff8c00' : relColor;
+    ctx.lineWidth   = (e.relation === 'connects' ? 0.7 : 1.1) / tf.scale;
+    ctx.beginPath(); ctx.moveTo(src.x, src.y); ctx.lineTo(tgt.x, tgt.y); ctx.stroke();
+  });
+  ctx.restore(); // back to source-over
 
+  // ── Edge labels + arrows (only for typed/highlighted edges) ──────────────
+  _brainEdgeArr.forEach(e => {
+    const src = typeof e.source === 'object' ? e.source : _brainNodeMap.get(e.source);
+    const tgt = typeof e.target === 'object' ? e.target : _brainNodeMap.get(e.target);
+    if (!src || !tgt || src.x == null || tgt.x == null) return;
+    const isHL      = hasHL && _brainHL.has(src.id) && _brainHL.has(tgt.id);
+    const isPartial = !isHL && hasHL && (_brainHL.has(src.id) || _brainHL.has(tgt.id));
+    if (!isHL && !isPartial && e.relation === 'connects') return;
     const x1 = src.x, y1 = src.y, x2 = tgt.x, y2 = tgt.y;
     const dist = Math.sqrt((x2-x1)**2 + (y2-y1)**2);
     const ang  = Math.atan2(y2-y1, x2-x1);
-    const lw   = e.relation === 'connects'
-      ? (isHL ? (1.5 + e.weight*0.5)*2 : 1.5 + e.weight*0.5)
-      : (isHL ? 3.5 : 2.2);
-
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    ctx.strokeStyle = isHL ? '#f97316' : relColor;
-    ctx.lineWidth   = lw;
-    ctx.lineCap     = 'round';
-    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
-
-    // Arrowhead: always on non-connects edges, on highlight for connects
-    const showArrow = e.relation !== 'connects' || isHL;
-    if (showArrow && dist > 25) {
-      const arrowLen = isHL ? 10 : 7;
-      ctx.fillStyle = isHL ? '#f97316' : relColor;
+    const relColor = BRAIN_RELATION_COLORS[e.relation] || BRAIN_RELATION_COLORS.default;
+    const col = isHL ? '#ff8c00' : relColor;
+    if (e.relation !== 'connects' && dist > 20) {
+      const al = 7;
+      ctx.save(); ctx.globalAlpha = 0.65; ctx.fillStyle = col;
       ctx.beginPath();
       ctx.moveTo(x2, y2);
-      ctx.lineTo(x2 - arrowLen*Math.cos(ang-Math.PI/6), y2 - arrowLen*Math.sin(ang-Math.PI/6));
-      ctx.lineTo(x2 - arrowLen*Math.cos(ang+Math.PI/6), y2 - arrowLen*Math.sin(ang+Math.PI/6));
-      ctx.closePath(); ctx.fill();
+      ctx.lineTo(x2 - al*Math.cos(ang-Math.PI/6), y2 - al*Math.sin(ang-Math.PI/6));
+      ctx.lineTo(x2 - al*Math.cos(ang+Math.PI/6), y2 - al*Math.sin(ang+Math.PI/6));
+      ctx.closePath(); ctx.fill(); ctx.restore();
     }
-
-    // Relation label: at midpoint when highlighted OR zoomed in (scale > 1.8) OR non-connects edge
-    const showLabel = (isHL || isPartial || e.relation !== 'connects') && dist > 50 && tf.scale > 0.6;
-    if (showLabel) {
+    if ((isHL || e.relation !== 'connects') && dist > 50 && tf.scale > 0.5) {
       const mx = (x1+x2)/2, my = (y1+y2)/2;
-      const text = (e.relation || 'connects').replace(/_/g, ' ');
-      const fs = Math.max(8, Math.min(11, 8 + tf.scale));
+      const text = (e.relation||'').replace(/_/g,' ');
+      const fs = 9;
+      ctx.save();
       ctx.font = `${fs}px -apple-system,"Segoe UI",sans-serif`;
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       const tw = ctx.measureText(text).width;
-      ctx.globalAlpha = alpha * 0.88;
-      ctx.fillStyle = 'rgba(10,8,6,0.72)';
+      ctx.globalAlpha = 0.82;
+      ctx.fillStyle = 'rgba(8,6,18,0.82)';
       ctx.fillRect(mx - tw/2 - 3, my - fs/2 - 2, tw + 6, fs + 4);
-      ctx.fillStyle = isHL ? '#f97316' : relColor;
-      ctx.fillText(text, mx, my);
+      ctx.fillStyle = col; ctx.fillText(text, mx, my);
+      ctx.restore();
     }
-    ctx.restore();
   });
 
-  // ── Nodes ──────────────────────────────────────────────────────────────────
+  // ── Nodes: solid fills + shadow glow (PyGraphistry luminous dots) ─────────
   nodeArr.forEach(n => {
     if (n.x == null) return;
     const isHL   = hasHL && _brainHL.has(n.id);
     const dimmed = hasHL && !isHL;
     const isHov  = n.id === _brainHover;
     const r      = _brainRadius(n);
-    const alpha  = dimmed ? 0.07*n.opacity : n.opacity*0.92;
+    const alpha  = dimmed ? 0.08 * n.opacity : n.opacity;
     if (alpha < 0.01) return;
-    const baseColor = isHL ? '#f97316' : _brainNodeColor(n);
+    const baseColor = isHL ? '#ff8c00' : _brainNodeColor(n);
     ctx.save();
     ctx.globalAlpha = alpha;
 
+    // Glow: shadow creates luminous halo without needing composite mode change
+    if (!dimmed) {
+      const glowSize = isHL ? r*5 : isHov ? r*3.5 : r*2;
+      ctx.shadowColor = baseColor;
+      ctx.shadowBlur  = glowSize;
+    }
+
     // Shape by entity type
     if (n.entity_type === 'Carrier') {
-      // Diamond
       ctx.fillStyle = baseColor;
       ctx.beginPath();
-      ctx.moveTo(n.x,     n.y - r*1.4);
+      ctx.moveTo(n.x,        n.y - r*1.4);
       ctx.lineTo(n.x + r*1.1, n.y);
-      ctx.lineTo(n.x,     n.y + r*1.4);
+      ctx.lineTo(n.x,        n.y + r*1.4);
       ctx.lineTo(n.x - r*1.1, n.y);
       ctx.closePath(); ctx.fill();
       if (isHov || isHL) {
-        ctx.strokeStyle = isHL ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.55)';
-        ctx.lineWidth = isHL ? 2 : 1.5;
-        if (isHL) { ctx.shadowBlur = 20; ctx.shadowColor = '#f97316'; }
-        ctx.stroke(); ctx.shadowBlur = 0;
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = 1.5;
+        ctx.stroke();
       }
     } else if (n.entity_type === 'AircraftType') {
-      // Equilateral triangle
       ctx.fillStyle = baseColor;
       ctx.beginPath();
-      ctx.moveTo(n.x,         n.y - r*1.3);
-      ctx.lineTo(n.x + r*1.1, n.y + r*0.8);
-      ctx.lineTo(n.x - r*1.1, n.y + r*0.8);
+      ctx.moveTo(n.x,          n.y - r*1.3);
+      ctx.lineTo(n.x + r*1.1,  n.y + r*0.8);
+      ctx.lineTo(n.x - r*1.1,  n.y + r*0.8);
       ctx.closePath(); ctx.fill();
       if (isHov || isHL) {
-        ctx.strokeStyle = isHL ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.55)';
-        ctx.lineWidth = isHL ? 2 : 1.5;
-        if (isHL) { ctx.shadowBlur = 18; ctx.shadowColor = '#f97316'; }
-        ctx.stroke(); ctx.shadowBlur = 0;
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = 1.5;
+        ctx.stroke();
       }
     } else {
-      // Circle (Airport + default)
       ctx.fillStyle = baseColor;
       ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, Math.PI*2); ctx.fill();
-      if (isHov && !isHL) {
-        ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 1.5;
-        ctx.beginPath(); ctx.arc(n.x, n.y, r+2.5, 0, Math.PI*2); ctx.stroke();
-      }
-      if (isHL) {
-        ctx.shadowBlur = 20; ctx.shadowColor = '#f97316';
-        ctx.strokeStyle = 'rgba(255,255,255,0.92)'; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.arc(n.x, n.y, r+3, 0, Math.PI*2); ctx.stroke();
+      if (isHov || isHL) {
         ctx.shadowBlur = 0;
+        ctx.strokeStyle = isHL ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.5)';
+        ctx.lineWidth = isHL ? 2 : 1.2;
+        ctx.beginPath(); ctx.arc(n.x, n.y, r + (isHL?3:2), 0, Math.PI*2); ctx.stroke();
       }
     }
+    ctx.shadowBlur = 0;
     ctx.restore();
 
-    // Label: carriers always, airports when highlighted/hovered/mega-hub
-    const isCarrier  = n.entity_type === 'Carrier';
-    const isAircraft = n.entity_type === 'AircraftType';
-    const showLabel  = isHL || isHov || isCarrier || isAircraft || (n.dest_count||0) > 60;
+    // Label: carriers always, airports when highlighted/hovered/major hub
+    const showLabel = isHL || isHov || n.entity_type==='Carrier' || n.entity_type==='AircraftType' || (n.dest_count||0) > 60;
     if (showLabel && !dimmed) {
-      const fs  = isCarrier ? 10 : Math.max(9, Math.min(13, 8 + (n.dest_count||0)*0.04));
+      const fs  = n.entity_type==='Carrier' ? 10 : Math.max(9, Math.min(13, 8 + (n.dest_count||0)*0.04));
       const lbl = n.label, ly = n.y + r + 4;
       ctx.save();
-      ctx.font = `${(isHL || isCarrier) ? '600 ' : ''}${fs}px -apple-system,"Segoe UI",sans-serif`;
+      ctx.font = `${(isHL||n.entity_type==='Carrier') ? '600 ' : ''}${fs}px -apple-system,"Segoe UI",sans-serif`;
       ctx.textAlign = 'center'; ctx.textBaseline = 'top';
       const tw = ctx.measureText(lbl).width;
-      ctx.globalAlpha = n.opacity * 0.92;
-      ctx.fillStyle = 'rgba(10,10,16,0.7)';
+      ctx.globalAlpha = n.opacity * 0.9;
+      ctx.fillStyle = 'rgba(8,6,18,0.72)';
       ctx.fillRect(n.x - tw/2 - 3, ly - 1, tw + 6, fs + 3);
-      ctx.fillStyle = isHL ? '#fff' : _brainNodeColor(n);
+      ctx.fillStyle = isHL ? '#fff' : baseColor;
       ctx.fillText(lbl, n.x, ly);
       ctx.restore();
     }
@@ -1544,25 +2464,25 @@ function _brainNodeAt(cx, cy) {
 }
 
 function _showBrainNodeInfo(node) {
-  const typeColor = BRAIN_ENTITY_COLORS[node.entity_type] || '#c9d1d9';
+  const typeColor = BRAIN_ENTITY_COLORS[node.entity_type] || '#667eea';
   const typeBadge = `<span style="color:${typeColor};font-weight:700;text-transform:uppercase;font-size:10px">${node.entity_type||'Airport'}</span>`;
   if (node.entity_type === 'Carrier') {
     document.getElementById('brain-status').innerHTML = `
       ${typeBadge}
-      <span style="color:#f472b6;font-weight:600">${node.name||node.label}</span>
+      <span style="color:#553c9a;font-weight:600">${node.name||node.label}</span>
       <span class="brain-hl-tag">${node.carrier_type||'Airline'}</span>
       <span class="brain-hl-dim">Alliance: ${node.alliance||'None'}</span>
       <span class="brain-hl-dim">${node.routes||0} routes · ${node.airports_count||0} airports</span>`;
   } else if (node.entity_type === 'AircraftType') {
     document.getElementById('brain-status').innerHTML = `
       ${typeBadge}
-      <span style="color:#a78bfa;font-weight:600">${node.label}</span>
+      <span style="color:#553c9a;font-weight:600">${node.label}</span>
       <span class="brain-hl-dim">${node.operators||0} operators · ${node.routes||0} routes</span>`;
   } else {
     document.getElementById('brain-status').innerHTML = `
       ${typeBadge}
-      <span style="color:#c9d1d9;font-weight:600">${node.label}</span>
-      <span>${node.city||''}</span>
+      <span style="color:#2d3748;font-weight:600">${node.label}</span>
+      <span style="color:#718096">${node.city||''}</span>
       <span class="brain-hl-tag">Tier: ${node.hub_tier||'—'}</span>
       <span class="brain-hl-dim">PR: ${node.pagerank||'—'}</span>
       <span class="brain-hl-dim">Dests: ${node.dest_count||'—'}</span>`;
@@ -1574,15 +2494,20 @@ function _initBrainSim() {
   const H = _brainCanvas ? _brainCanvas.offsetHeight : 600;
   if (_brainSim) { _brainSim.stop(); _brainSim = null; }
   _brainSim = d3Force.forceSimulation()
-    .force('charge',    d3Force.forceManyBody().strength(n => -180 - (n.degree||n.dest_count||0) * 18))
-    .force('link',      d3Force.forceLink().id(n => n.id).distance(110).strength(0.4))
-    .force('center',    d3Force.forceCenter(W/2, H/2).strength(0.04))
-    .force('collision', d3Force.forceCollide().radius(n => _brainRadius(n) + 4).strength(0.7))
-    .force('x',         d3Force.forceX(W/2).strength(0.02))
-    .force('y',         d3Force.forceY(H/2).strength(0.02))
+    .force('charge',    d3Force.forceManyBody().strength(n => -300 - (n.degree||n.dest_count||0) * 30).distanceMax(600))
+    .force('link',      d3Force.forceLink().id(n => n.id).distance(n => {
+        const deg = n.degree || n.dest_count || 0;
+        return 80 + Math.sqrt(deg) * 8;
+      }).strength(0.2))
+    .force('center',    d3Force.forceCenter(W/2, H/2).strength(0.02))
+    .force('collision', d3Force.forceCollide().radius(n => {
+        return 20 + (n.degree||n.dest_count||0) * 1.8;
+      }).strength(0.85))
+    .force('x',         d3Force.forceX(W/2).strength(0.008))
+    .force('y',         d3Force.forceY(H/2).strength(0.008))
     .alphaTarget(0)
-    .alphaDecay(0.025)
-    .velocityDecay(0.5);
+    .alphaDecay(0.012)
+    .velocityDecay(0.45);
 }
 
 function _fitBrainView() {
@@ -1601,25 +2526,81 @@ function _fitBrainView() {
   _brainTransform = { x: W/2-(minX+maxX)/2*scale, y: H/2-(minY+maxY)/2*scale, scale };
 }
 
+// ── Public brain-panel API (called from buttons + chat handler) ──────────────
+
+/** Extract IATA airport codes (3-letter uppercase) from an LM response object */
+function extractCodesFromResponse(r) {
+  const text = [r.answer || '', JSON.stringify(r.tools_used || '')].join(' ');
+  const found = new Set();
+  // Match standalone 3-letter uppercase words (IATA codes)
+  const matches = text.match(/\b([A-Z]{3})\b/g) || [];
+  matches.forEach(code => { if (_brainNodes.has(code)) found.add(code); });
+  return [...found];
+}
+
+/** Highlight a set of IATA codes in the brain graph */
+function highlightQuery(codes) {
+  _brainHL = new Set(codes);
+  const statusEl = document.getElementById('brain-status');
+  if (statusEl && codes.length > 0) {
+    const tags = codes.slice(0, 8).map(c => `<span class="brain-hl-tag">${c}</span>`).join('');
+    const more = codes.length > 8 ? `<span class="brain-hl-dim">+${codes.length-8} more</span>` : '';
+    statusEl.innerHTML = `<span style="color:#718096">Highlighting:</span> ${tags}${more}`;
+  }
+  // When exactly 2 airport codes are highlighted, surface sim opportunities
+  if (codes.length === 2) {
+    updateSimOpportunities(codes[0], codes[1]);
+  }
+  // When a node is clicked directly (no recent query), still fetch entity-aware LM suggestions
+  if (!_lastQuery) {
+    const nodeLabels = codes.slice(0, 3).join(', ');
+    _fetchLMSuggestions(
+      `Tell me about ${nodeLabels}`,
+      `The user clicked on graph nodes: ${nodeLabels}`,
+      codes
+    );
+  } else {
+    _fetchLMSuggestions(_lastQuery, _lastAnswer, codes);
+  }
+}
+
+/** Clear all node highlights (double-click canvas or New Thread) */
+function clearBrainHighlight() {
+  _brainHL = new Set();
+  const statusEl = document.getElementById('brain-status');
+  if (statusEl) statusEl.innerHTML = '<span id="brain-status-text" style="color:#a0aec0">Highlights cleared</span>';
+}
+
+/** Fit / zoom-out to show full graph (Fit button) */
+function fitBrainGraph() {
+  _fitBrainView();
+}
+
 async function loadBrainGraph() {
   const pulse     = document.getElementById('brain-pulse');
   const statusEl  = document.getElementById('brain-status');
   const statusTxt = document.getElementById('brain-status-text');
-  if (pulse) pulse.style.background = '#e3b341';
-  if (statusTxt) statusTxt.textContent = 'Waiting for graph analytics\u2026';
+  if (pulse) pulse.style.background = '#dd6b20';
 
-  for (let i = 0; i < 40; i++) {
+  // ── Phase 1: Wait for NetworkX graph (fastest layer ~5s) ─────────────────
+  if (statusTxt) statusTxt.textContent = 'Connecting to knowledge graph\u2026';
+  for (let i = 0; i < 60; i++) {
     try {
       const s = await fetch(`${BASE}/api/v1/graph/status`).then(r => r.json());
-      if (s.analytics && s.analytics.ready) break;
+      // Status returns flat keys: {networkx:{ready}, rdf:{ready}, kuzu:{ready}, analytics:{ready}}
+      const nx = s.networkx || s.layers?.networkx || s.layers?.NetworkX;
+      if (nx && nx.ready) break;
+      const allLayers = s.layers ? Object.values(s.layers) : [s.networkx, s.rdf, s.kuzu, s.analytics].filter(Boolean);
+      const building = allLayers.filter(l => !l?.ready).length;
+      if (statusTxt) statusTxt.textContent = `Building graph… ${i+1}s (${building} layer${building!==1?'s':''} pending)`;
     } catch {}
-    await new Promise(r => setTimeout(r, 2500));
-    if (statusTxt) statusTxt.textContent = `Building graph\u2026 (${Math.round((i+1)*2.5)}s)`;
+    await new Promise(r => setTimeout(r, 1000));
   }
 
+  // ── Phase 2: Load overview (works even if analytics still building) ───────
   try {
     if (statusTxt) statusTxt.textContent = 'Fetching network data\u2026';
-    const data = await fetch(`${BASE}/api/v1/graph/overview`).then(r => r.json());
+    const data = await fetch(`${BASE}/api/v1/graph/overview?min_connections=20`).then(r => r.json());
     if (data.error) { if (statusTxt) statusTxt.textContent = '\u26a0 ' + data.error; return; }
 
     const nodeArr = data.elements.nodes || [];
@@ -1711,12 +2692,30 @@ async function loadBrainGraph() {
       _brainSim.force('link').links(_brainEdgeArr);
     }
 
-    // Done — stop auto-fit so user can pan/zoom freely
-    _brainAutoFit = false;
-    statusEl.innerHTML = `<span id="brain-status-text" style="color:#3fb950">
-      \u2713 ${stats.airport_count||nodeArr.length} airports &nbsp;\u00b7&nbsp;
-      ${stats.carrier_count||0} carriers &nbsp;\u00b7&nbsp;
-      ${stats.aircraft_count||0} fleets &nbsp;\u00b7&nbsp;
+    // If loaded with partial data, watch for analytics to finish and refresh
+    if (stats.partial) {
+      if (statusTxt) statusTxt.textContent += ' (analytics building\u2026)';
+      (async () => {
+        for (let i = 0; i < 60; i++) {
+          await new Promise(r => setTimeout(r, 3000));
+          try {
+            const s = await fetch(`${BASE}/api/v1/graph/status`).then(r => r.json());
+            const an = s.analytics || s.layers?.analytics || s.layers?.Analytics;
+            if (an && an.ready) {
+              loadBrainGraph();
+              return;
+            }
+          } catch {}
+        }
+      })();
+    }
+
+    // Keep autoFit running so the view smoothly follows the settling simulation
+    // User pan/scroll will disable it. No hard snap at the end.
+    statusEl.innerHTML = `<span id="brain-status-text" style="color:#38a169">
+      ✓ ${stats.airport_count||nodeArr.length} airports &nbsp;·&nbsp;
+      ${stats.carrier_count||0} carriers &nbsp;·&nbsp;
+      ${stats.aircraft_count||0} fleets &nbsp;·&nbsp;
       ${edgeArr.length} edges
     </span>`;
     document.getElementById('brain-footer-stats').textContent =
@@ -1737,16 +2736,18 @@ async function loadBrainGraph() {
         dotsEl.appendChild(el);
       });
     }
-    if (pulse) pulse.style.background = '#238636';
-    setTimeout(_fitBrainView, 3000);
+    if (pulse) pulse.style.background = '#38a169';
 
   } catch (e) {
-    if (statusTxt) statusTxt.textContent = '\u26a0 Load failed: ' + e.message;
-    if (pulse) pulse.style.background = '#da3633';
+    if (statusTxt) statusTxt.textContent = '⚠ Load failed: ' + e.message;
+    if (pulse) pulse.style.background = '#e53e3e';
     console.error('Brain load error:', e);
   }
 }
+loadStatus();
 loadBrainGraph();
+_initPersonaBar();
+updateSuggestions();
 </script>
 </body>
 </html>

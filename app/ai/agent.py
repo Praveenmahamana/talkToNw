@@ -50,8 +50,8 @@ def init_schedule_name() -> None:
         pass  # keep default
 
 
-def _get_system_prompt() -> str:
-    return build_system_prompt(_schedule_name)
+def _get_system_prompt(persona: Optional[str] = None) -> str:
+    return build_system_prompt(_schedule_name, persona=persona)
 
 
 class ScheduleAgent:
@@ -70,13 +70,14 @@ class ScheduleAgent:
     # Public entry point
     # ─────────────────────────────────────────────────────────────────────────
 
-    def query(self, user_query: str, session_id: Optional[str] = None) -> Dict[str, Any]:
+    def query(self, user_query: str, session_id: Optional[str] = None, persona: Optional[str] = None) -> Dict[str, Any]:
         """
         Process a natural-language query through the Gemini agent loop.
 
         If session_id is provided (and exists), the prior conversation history is
         included so Gemini has full context of the thread.
         If session_id is None or not found, a new session is created.
+        If persona is provided, the system prompt is augmented with persona-specific lens.
 
         Falls back to deterministic-only mode when Vertex AI is not configured.
         """
@@ -105,7 +106,7 @@ class ScheduleAgent:
                 response = generate_content(
                     contents=history,
                     tools=self._get_tools(),
-                    system_instruction=_get_system_prompt(),
+                    system_instruction=_get_system_prompt(persona=persona),
                     temperature=0.0,
                 )
 
