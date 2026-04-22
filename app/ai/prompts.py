@@ -362,6 +362,86 @@ Then ALWAYS add commentary:
 - If local% > 70%: "Strong local market. VFR and corporate corridors dominate."
 - List top connecting routes: "Major feed: SYD-DXB (EK), LHR-DXB (EK), CDG-DXB (AF codeshare)"
 
+## SABRE PM (PASSENGER MODEL) — DEMAND & SPILL METHODOLOGY
+
+The workset data comes from the **Sabre Airline Passenger Model (APM/PM)**, which uses a multinomial logit choice model calibrated against actual booking data (GDD = Global Distribution Data / MIDT). Key concepts:
+
+### Core demand terminology
+| Term | Column | Meaning |
+|------|--------|---------|
+| **demand_pax** (`workset_base.demand_pax`) | apm_dmd | Total **unconstrained demand** — what all passengers WANT to fly, before capacity constraints. Always ≥ booked_pax. |
+| **booked_pax** (`workset_base.booked_pax`) | apm_pax | Actual **traffic/bookings** — passengers who found seats. = min(demand_pax, cap_total). |
+| **spill_pax** (`workset_base.spill_pax`) | spill | **Unserved demand** = demand_pax − booked_pax. Passengers who WANTED to fly but could NOT get seats (demand exceeds capacity). |
+| **recap_pax** (`workset_spill.recap_pax`) | recap | **Recaptured pax** — passengers spilled from COMPETITOR flights who then booked onto THIS carrier. |
+| **lf_pax** (`workset_spill.lf_pax`) | LF | **Load factor** = booked_pax / cap_total for this specific flight. |
+| **total_lf_pax** (`workset_spill.total_lf_pax`) | total LF | **Market-wide load factor** across all carriers on this O&D — high value (>85%) signals a constrained market. |
+| **mkt_share** (`workset_spill.mkt_share`) | share | PM-calibrated **market share** for this airline on this O&D, derived from the logit model against GDD actuals. |
+
+### Demand vs traffic distinction (critical)
+- **Demand** = unconstrained; what passengers would book if infinite seats were available
+- **Traffic/bookings** = actual passengers constrained by capacity
+- **Spill** = demand − traffic; these pax go to competitors or defer travel
+- **Recapture** = portion of spill that comes BACK to you from competitors' overflow
+
+### Spill & recapture in route analysis
+When spill is HIGH relative to capacity → market is under-served → strong case for adding frequency.
+When total_lf_pax > 85% market-wide → even competitors are full → spill is real and recapture is available.
+
+### Logit model (itinerary choice)
+Passengers choose between itineraries using a utility model. Key parameters (from Default_Logit_Profiles.csv):
+- **Nonstop preference**: β_nsratio = +0.4–0.5 → passengers strongly prefer nonstop
+- **Connection penalty**: β_conn = −1.75 to −3.0 (varies by distance band) → connecting adds large disutility
+- **Elapsed time**: β_elap = −0.006 to −0.01 per minute → shorter = better
+- **Relative fare**: β_relfare = +0.2–1.0 → schedule-sensitive pax pay more for preferred timing
+- **Wide-body bonus**: β_wide = +1.3–1.7 → passengers prefer wide-body equipment
+- **Interline penalty**: β_interline = −2.5 to −3.0 → strong preference for online itineraries
+
+### Distance bands (for context)
+| Band | Block time | Typical β_conn | Diversion elasticity |
+|------|-----------|---------------|---------------------|
+| USH (ultra short haul) | < 90 min | −1.5 | High (~25%) |
+| SH (short haul) | 90–180 min | −2.0 | Moderate (~20%) |
+| MH (medium haul) | 180–300 min | −2.25 | Moderate (~16%) |
+| LH (long haul) | 300–480 min | −2.5 | Low (~12%) |
+| ULH (ultra long haul) | > 480 min | −3.0 | Very low (~8%) |
+
+### FVA (Forecast Validation Analysis)
+FVA = comparing PM forecast outputs against actual observed departure data (PDD = Passenger Departure Data):
+- **pax_diff_pct** = (apm_pax − act_pax) / act_pax → traffic accuracy; good if < ±10%
+- **lf_bias** = apm_lf − act_lf → load factor accuracy; good if < ±0.05
+- **WMAPE** = weighted mean absolute percentage error; good if < 15%
+
+When asked about **forecast accuracy**, **PM calibration**, **FVA**, **apm_dmd**, **apm_pax**, or **logit parameters** → explain using the above framework. Use `execute_sql` on `workset_base` / `workset_spill` for specific route data.
+
+### SQL patterns for PM demand analysis
+```sql
+-- Demand pressure: unconstrained demand vs capacity vs spill by airline
+SELECT op_airline,
+       SUM(demand_pax)  AS total_demand,
+       SUM(booked_pax)  AS total_traffic,
+       SUM(spill_pax)   AS total_spill,
+       SUM(cap_total)   AS total_cap,
+       ROUND(SUM(booked_pax)/NULLIF(SUM(cap_total),0)*100,1) AS avg_lf_pct,
+       ROUND(SUM(spill_pax)/NULLIF(SUM(demand_pax),0)*100,1) AS spill_rate_pct
+FROM workset_base
+WHERE origin = 'DXB' AND dest = 'BOM'
+GROUP BY op_airline
+ORDER BY total_spill DESC
+
+-- Per-hour LF and recapture from SPILLDATA
+SELECT TRY_CAST(SUBSTRING(dep_time,1,2) AS INTEGER)  AS dep_hour,
+       airline,
+       ROUND(AVG(lf_pax)*100,1)        AS avg_lf_pct,
+       ROUND(AVG(total_lf_pax)*100,1)  AS mkt_lf_pct,
+       SUM(spill_pax)                  AS spill,
+       SUM(recap_pax)                  AS recap,
+       ROUND(AVG(mkt_share)*100,1)     AS mkt_share_pct
+FROM workset_spill
+WHERE origin = 'DXB' AND dest = 'BOM'
+GROUP BY dep_hour, airline
+ORDER BY dep_hour, avg_lf_pct DESC
+```
+
 ## WHEN DATA IS UNAVAILABLE
 
 If a tool returns `"error": "Workset data not yet loaded"` or similar:
