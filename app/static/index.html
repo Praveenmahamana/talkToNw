@@ -362,8 +362,9 @@
       font-size: 0.72rem; color: #718096; cursor: pointer; transition: all .2s;
     }
     .sim-opp-refresh:hover { background: #f7fafc; border-color: #667eea; color: #667eea; }
-    .sim-opp-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-    @media (max-width: 900px) { .sim-opp-grid { grid-template-columns: 1fr; } }
+    .sim-opp-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+    @media (max-width: 1100px) { .sim-opp-grid { grid-template-columns: repeat(3, 1fr); } }
+    @media (max-width: 700px)  { .sim-opp-grid { grid-template-columns: repeat(2, 1fr); } }
     .sim-opp-card {
       background: #fff; border: 1.5px solid #e2e8f0; border-radius: 10px; padding: 16px;
       position: relative; transition: box-shadow .2s, border-color .2s;
@@ -373,6 +374,7 @@
     .sim-opp-card.rank-1 { border-color: #d69e2e; background: linear-gradient(135deg,#fffff0 0%,#fff 100%); }
     .sim-opp-card.rank-2 { border-color: #a0aec0; background: linear-gradient(135deg,#f7fafc 0%,#fff 100%); }
     .sim-opp-card.rank-3 { border-color: #c6b8a8; background: linear-gradient(135deg,#fffaf5 0%,#fff 100%); }
+    .sim-opp-card.rank-high { border-color: #e2e8f0; }
     .sim-opp-rank {
       position: absolute; top: 10px; right: 12px;
       font-size: 0.62rem; font-weight: 700; letter-spacing: .04em; padding: 2px 7px;
@@ -381,6 +383,7 @@
     .rank-1 .sim-opp-rank { background: #fef3c7; color: #b7791f; }
     .rank-2 .sim-opp-rank { background: #e2e8f0; color: #4a5568; }
     .rank-3 .sim-opp-rank { background: #ede0d0; color: #7b5e3f; }
+    .rank-high .sim-opp-rank { background: #f1f5f9; color: #94a3b8; }
     .sim-opp-route { font-size: 1rem; font-weight: 700; color: #1a202c; letter-spacing: .02em; }
     .sim-opp-time  { font-size: 0.82rem; color: #667eea; font-weight: 600; }
     .sim-opp-meta  { font-size: 0.74rem; color: #718096; }
@@ -391,6 +394,22 @@
     .sim-opp-metric-label { font-size: 0.66rem; color: #a0aec0; text-transform: uppercase; letter-spacing: .04em; }
     .sim-opp-metric-val   { font-size: 0.9rem; font-weight: 700; color: #1a202c; }
     .sim-opp-metric-val.green { color: #38a169; }
+    .sim-opp-spill-row {
+      display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px;
+    }
+    .sim-opp-spill-pill {
+      font-size: 0.64rem; padding: 2px 7px; border-radius: 10px; font-weight: 600;
+    }
+    .spill-pill-recapture { background: #dcfce7; color: #15803d; }
+    .spill-pill-diversion { background: #fef9c3; color: #854d0e; }
+    .sim-opp-competitors { margin-top: 4px; display: flex; flex-direction: column; gap: 3px; }
+    .sim-opp-comp-row {
+      display: flex; align-items: center; justify-content: space-between;
+      font-size: 0.66rem; color: #4a5568; background: #fff7f7;
+      border-radius: 5px; padding: 2px 7px; border-left: 2px solid #fc8181;
+    }
+    .sim-opp-comp-al { font-weight: 700; color: #c53030; }
+    .sim-opp-comp-pct { color: #718096; }
     .sim-opp-use {
       background: #667eea; color: #fff; border: none; border-radius: 7px;
       padding: 7px 0; font-size: 0.78rem; font-weight: 600; cursor: pointer;
@@ -2863,7 +2882,7 @@ async function updateSimOpportunities(origin, dest) {
   ctx.textContent    = `${origin} → ${dest}`;
 
   // Show skeleton cards
-  grid.innerHTML = [1,2,3].map(() => `
+  grid.innerHTML = [1,2,3,4,5,6,7,8,9,10].map(() => `
     <div class="sim-opp-skel">
       <div class="skel-line" style="height:14px;width:60%;margin-bottom:10px"></div>
       <div class="skel-line" style="height:10px;width:40%;margin-bottom:8px"></div>
@@ -2890,11 +2909,36 @@ async function updateSimOpportunities(origin, dest) {
 }
 
 function _renderOppCard(o) {
-  const pct = Math.min(100, Math.max(8, Math.round(o.opportunity_score / 42 * 100)));
-  const fmt = n => n >= 1000 ? `$${(n/1000).toFixed(1)}k` : `$${n}`;
+  const pct     = Math.min(100, Math.max(8, Math.round(o.opportunity_score / 42 * 100)));
+  const fmt     = n => n >= 1000 ? `$${(n/1000).toFixed(1)}k` : `$${n}`;
+  const medals  = ['🥇','🥈','🥉'];
+  const rankCls = o.rank <= 3 ? `rank-${o.rank}` : 'rank-high';
+  const rankBadge = o.rank <= 3
+    ? `#${o.rank} ${medals[o.rank-1]}`
+    : `#${o.rank}`;
+
+  // Spill pills
+  const spillHtml = (o.spill_recapture || o.diversion_pax)
+    ? `<div class="sim-opp-spill-row">
+        ${o.spill_recapture ? `<span class="sim-opp-spill-pill spill-pill-recapture">↑ ${o.spill_recapture} spill</span>` : ''}
+        ${o.diversion_pax   ? `<span class="sim-opp-spill-pill spill-pill-diversion">⇄ ${o.diversion_pax} diversion</span>` : ''}
+       </div>` : '';
+
+  // Competitor rows
+  const compHtml = (o.competitors_at_risk && o.competitors_at_risk.length)
+    ? `<div class="sim-opp-competitors">` +
+        o.competitors_at_risk.map(c =>
+          `<div class="sim-opp-comp-row">
+             <span class="sim-opp-comp-al">${escHtml(c.airline)}</span>
+             <span>${c.market_share}% mkt share</span>
+             <span class="sim-opp-comp-pct">~${c.pax_at_risk} pax at risk</span>
+           </div>`
+        ).join('') +
+      `</div>` : '';
+
   return `
-    <div class="sim-opp-card rank-${o.rank}">
-      <span class="sim-opp-rank">#${o.rank} ${['🥇','🥈','🥉'][o.rank-1]}</span>
+    <div class="sim-opp-card ${rankCls}">
+      <span class="sim-opp-rank">${rankBadge}</span>
       <div class="sim-opp-route">${escHtml(o.origin)} → ${escHtml(o.destination)}</div>
       <div class="sim-opp-time">⏱ ${escHtml(o.departure_time)} dep</div>
       <div class="sim-opp-slot">${escHtml(o.slot_label)} · ${o.gap_hours}h gap · ${escHtml(o.aircraft_type)}</div>
@@ -2909,6 +2953,8 @@ function _renderOppCard(o) {
           <div class="sim-opp-metric-val green">${fmt(o.est_revenue)}</div>
         </div>
       </div>
+      ${spillHtml}
+      ${compHtml}
       <button class="sim-opp-use" onclick="_useOpportunity(${JSON.stringify(o).replace(/"/g,'&quot;')})">Use this ↗</button>
     </div>`;
 }

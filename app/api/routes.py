@@ -354,8 +354,9 @@ _SLOT_BASE_SCORES = {
 @router.get("/flight-opportunities", tags=["Simulation"])
 async def flight_opportunities(origin: str, destination: str, airline: str = ""):
     """
-    Return 3 ranked flight-addition opportunities for an O&D pair.
+    Return top-10 ranked flight-addition opportunities for an O&D pair.
     Scores time-slot gaps against existing schedule + workset demand.
+    Includes spill/recapture breakdown and competitor airline share at risk.
     """
     from app.database.db import get_connection
     from datetime import date, timedelta
@@ -443,21 +444,41 @@ async def flight_opportunities(origin: str, destination: str, airline: str = "")
         score   = max(0, base - penalty)
         candidates.append((score, hour, base))
     candidates.sort(reverse=True)
-    top3 = candidates[:3]
+    top10 = candidates[:10]
+
+    # ── 3b. Competitor airline share on this O&D ──────────────────────────────
+    # Build {airline: (weekly_flights, avg_dep_hour)} from existing schedule
+    competitor_map: dict = {}  # airline -> {flights, hours: []}
+    for r in ex_rows:
+        al = r[2]
+        if not al:
+            continue
+        if al not in competitor_map:
+            competitor_map[al] = {"flights": 0, "hours": []}
+        competitor_map[al]["flights"] += int(r[4] or 1)
+        if r[0] is not None:
+            competitor_map[al]["hours"].append(int(r[0]))
+
+    total_flights = sum(v["flights"] for v in competitor_map.values()) or 1
+    # Airline share: fraction of weekly frequencies
+    airline_share = {
+        al: round(v["flights"] / total_flights * 100)
+        for al, v in competitor_map.items()
+    }
 
     # ── 4. Build opportunity cards ────────────────────────────────────────────
     today = date.today()
-    # Next Sunday for a clean week
     days_to_sun = (6 - today.weekday()) % 7 or 7
     dep_date = today + timedelta(days=days_to_sun)
 
-    minutes_cycle = [30, 0, 45]
+    minutes_cycle = [30, 0, 45, 15, 50, 10, 40, 20, 55, 5]
+    weekly_spill_val = weekly_spill_total or int(daily_spill * 7)
+
     results = []
-    for rank, (score, hour, base_score) in enumerate(top3, 1):
+    for rank, (score, hour, base_score) in enumerate(top10, 1):
         minute   = minutes_cycle[rank - 1]
         dep_time = f"{hour:02d}:{minute:02d}"
 
-        # Slot share: better slot = more captured demand
         slot_share = 0.22 if base_score >= 35 else (0.16 if base_score >= 20 else 0.10)
         gap_h      = min((abs(hour - eh) for eh in existing_hours), default=12)
         pax_est    = max(40, int(min(
@@ -465,6 +486,30 @@ async def flight_opportunities(origin: str, destination: str, airline: str = "")
             default_cap * 0.88
         )))
         rev_est = pax_est * yield_usd
+
+        # Spill recapture: what fraction of weekly spill this slot would recapture
+        spill_recapture = max(0, int(weekly_spill_val * slot_share))
+
+        # Competitors vulnerable in this slot (their flights within 2h of this dep)
+        slot_competitors = []
+        for al, info in competitor_map.items():
+            if al == (airline.upper() or "EK"):
+                continue
+            nearby = [h for h in info["hours"] if abs(h - hour) <= 2]
+            if nearby:
+                shr = airline_share.get(al, 0)
+                # Estimated pax at risk from this competitor (15-25% diversion)
+                at_risk = max(1, int(pax_est * (shr / 100) * 0.20))
+                slot_competitors.append({
+                    "airline":        al,
+                    "market_share":   shr,
+                    "pax_at_risk":    at_risk,
+                })
+        slot_competitors.sort(key=lambda x: x["pax_at_risk"], reverse=True)
+
+        # Demand-from-spill vs demand-from-diversion split
+        spill_pax      = min(pax_est, spill_recapture)
+        diversion_pax  = max(0, pax_est - spill_pax)
 
         results.append({
             "rank":             rank,
@@ -479,8 +524,13 @@ async def flight_opportunities(origin: str, destination: str, airline: str = "")
             "opportunity_score": round(score),
             "slot_label":       _slot_label(hour),
             "gap_hours":        round(gap_h, 1),
+            "spill_recapture":  spill_pax,
+            "diversion_pax":    diversion_pax,
+            "weekly_spill_total": weekly_spill_val,
+            "competitors_at_risk": slot_competitors[:3],
             "reasoning": (
-                f"{_slot_label(hour)} · {gap_h:.0f}h gap from nearest existing flight"
+                f"{_slot_label(hour)} · {gap_h:.0f}h gap · "
+                f"recaptures ~{spill_pax} spill + {diversion_pax} diversion pax"
             ),
         })
 
@@ -491,9 +541,10 @@ async def flight_opportunities(origin: str, destination: str, airline: str = "")
             "destination":            dest,
             "existing_weekly_flights": len(ex_rows),
             "daily_demand_est":       int(daily_demand),
-            "weekly_spill_total":     weekly_spill_total,
+            "weekly_spill_total":     weekly_spill_val,
             "avg_block_min":          int(avg_block),
             "yield_usd":              yield_usd,
+            "airline_market_share":   airline_share,
         },
     }
 
