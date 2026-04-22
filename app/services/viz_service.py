@@ -345,9 +345,15 @@ def _route_intel_vizs(result: Dict) -> List[Dict]:
         flow_pct  = round(float(flow_pax  or 0) / total_pax * 100, 1)
         local_rev_pct = round(float(local_rev or 0) / total_rev * 100, 1) if local_rev else None
         flow_rev_pct  = round(float(flow_rev  or 0) / total_rev * 100, 1) if flow_rev  else None
+        # Parse O&D from route string e.g. "DXB-BOM"
+        _parts = route.split("-") if route else []
+        _origin = _parts[0].strip() if len(_parts) >= 1 else ""
+        _dest   = _parts[1].strip() if len(_parts) >= 2 else ""
         vizs.append({
             "type": "local_flow_split",
             "title": f"Demand Mix · {route}",
+            "origin": _origin,
+            "destination": _dest,
             "local_pax": float(local_pax or 0),
             "flow_pax":  float(flow_pax  or 0),
             "local_pct": local_pct,
