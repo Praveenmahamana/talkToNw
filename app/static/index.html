@@ -191,7 +191,7 @@
     .lf-advice { background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 12px 16px; margin-top: 14px; font-size: 0.82rem; color: #92400e; line-height: 1.6; }
     .lf-advice strong { color: #78350f; }
     /* Mini KG for connecting routes */
-    .lf-kg-wrap { margin-top: 10px; border-radius: 10px; overflow: hidden; background: #0c0b14; min-height: 200px; }
+    .lf-kg-wrap { margin-top: 10px; border-radius: 8px; overflow: hidden; background: #ffffff; min-height: 200px; border: 1px solid #e2e8f0; }
     .lf-kg-legend { display: flex; gap: 14px; flex-wrap: wrap; padding: 8px 4px 0; }
     .lf-kg-legend-item { display: flex; align-items: center; gap: 5px; font-size: 0.7rem; color: #718096; }
     .lf-kg-legend-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
@@ -1394,9 +1394,8 @@ function _initFlowKG(containerId, connecting, centerLabel, viz) {
     const wrap = document.getElementById(containerId);
     if (!wrap || !connecting || !connecting.length) return;
 
-    // Use ResizeObserver width or fall back to 420px
-    const W   = Math.max(wrap.getBoundingClientRect().width || wrap.offsetWidth || 420, 320);
-    const H   = 260;
+    const W   = Math.max(wrap.getBoundingClientRect().width || wrap.offsetWidth || 480, 360);
+    const H   = 280;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
 
     const canvas = document.createElement('canvas');
@@ -1405,268 +1404,317 @@ function _initFlowKG(containerId, connecting, centerLabel, viz) {
     canvas.style.width  = W + 'px';
     canvas.style.height = H + 'px';
     canvas.style.display = 'block';
-    canvas.style.borderRadius = '10px';
-    canvas.style.cursor = 'crosshair';
+    canvas.style.borderRadius = '8px';
+    canvas.style.cursor = 'default';
+    canvas.style.border = '1px solid #e2e8f0';
     wrap.innerHTML = '';
     wrap.appendChild(canvas);
     const ctx = canvas.getContext('2d');
     ctx.scale(dpr, dpr);
 
-    // ── O&D airports ─────────────────────────────────────────────────────────
-    const odMatch    = (viz && viz.origin) ? null :
-                       (centerLabel || '').match(/([A-Z]{3})\s*[-→\/]\s*([A-Z]{3})/i);
+    // ── PyGraphistry-style palette (white canvas, distinct node colors) ────────
+    const PAL = {
+      bg:       '#ffffff',
+      grid:     '#f1f5f9',
+      routeEdge:'#cbd5e1',   // light gray for main O&D edge
+      feederEdge:'#fb923c',  // orange for feeder edges
+      onwardEdge:'#818cf8',  // indigo for onward edges
+      alLabel:  '#64748b',   // slate for airline code labels
+      freqLabel:'#1e293b',   // dark for freq badges
+      border:   '#e2e8f0',
+      text:     '#1e293b',
+      subtext:  '#64748b',
+      // Node fills
+      originFill:'#10b981',  originBorder:'#059669',  // emerald
+      destFill:  '#3b82f6',  destBorder:  '#1d4ed8',  // blue
+      feederFill:'#f97316',  feederBorder:'#c2410c',  // orange
+      onwardFill:'#6366f1',  onwardBorder:'#4338ca',  // indigo
+    };
+
+    // ── O&D airports ──────────────────────────────────────────────────────────
+    const odMatch    = (viz && viz.origin) ? null
+                     : (centerLabel || '').match(/([A-Z]{3})\s*[-→\/]\s*([A-Z]{3})/i);
     const originCode = (viz && viz.origin)      ? viz.origin.toUpperCase()
                                                 : (odMatch ? odMatch[1].toUpperCase() : 'ORG');
     const destCode   = (viz && viz.destination) ? viz.destination.toUpperCase()
                                                 : (odMatch ? odMatch[2].toUpperCase() : 'DST');
 
-    // ── Separate by direction ─────────────────────────────────────────────────
-    const feeders  = connecting.filter(c => (c.direction || '').includes('feed') || (c.direction || '') === '');
-    const onwards  = connecting.filter(c => (c.direction || '').includes('onward'));
-    const topF     = feeders.slice(0, 8);
-    const topO     = onwards.slice(0, 6);
+    // ── Split by direction ────────────────────────────────────────────────────
+    const feeders = connecting.filter(c => (c.direction || '').includes('feed') || !(c.direction || '').includes('onward'));
+    const onwards = connecting.filter(c => (c.direction || '').includes('onward'));
+    const topF    = feeders.slice(0, 8);
+    const topO    = onwards.slice(0, 6);
 
-    // ── Positions ─────────────────────────────────────────────────────────────
-    // Layout: Feeder hubs (left) → Origin → ——— → Destination → Onward hubs (right)
-    const origX = W * 0.30, origY = H / 2;
-    const destX = W * 0.70, destY = H / 2;
-    const feederX = W * 0.06;
-    const onwardX = W * 0.94;
-
-    // Hub vert spacing
-    function hubPositions(count, centerX, side) {
-      const step = Math.min(44, (H - 40) / Math.max(count, 1));
-      const startY = H/2 - (count - 1) * step / 2;
-      return Array.from({length: count}, (_, i) => ({
-        x: centerX + (side === 'left' ? 0 : 0),
-        y: startY + i * step
-      }));
-    }
-
-    const feederPos = hubPositions(topF.length, feederX + 30, 'left');
-    const onwardPos = hubPositions(topO.length, onwardX - 30, 'right');
-
-    // ── Node / Edge definitions ────────────────────────────────────────────────
-    const COLORS = {
-      origin:  '#10b981',
-      dest:    '#2065d1',
-      hub_f:   '#f59e0b',
-      hub_o:   '#e879f9',
-      airline: '#8b5cf6',
-    };
-
-    let nodes = [];
-    let edges = [];
-    let fadeP = 0;  // 0..1 fade-in progress
-
-    // Main airports
-    const nOrig = { id: 'orig', label: originCode, x: origX, y: origY, color: COLORS.origin, r: 13, type: 'origin' };
-    const nDest = { id: 'dest', label: destCode,   x: destX, y: destY, color: COLORS.dest,   r: 13, type: 'dest' };
-    nodes.push(nOrig, nDest);
-
-    // Center route edge
     const maxFreq = Math.max(
-      ...topF.map(c => +(c.weekly_freq||c.frequency||1)),
-      ...topO.map(c => +(c.weekly_freq||c.frequency||1)), 1
+      ...topF.map(c => +(c.weekly_freq || c.frequency || 1)),
+      ...topO.map(c => +(c.weekly_freq || c.frequency || 1)), 1
     );
 
-    edges.push({ x1: origX, y1: origY, x2: destX, y2: destY,
-                 color: '#334155', rgb: '51,65,85', w: 2.5, dash: [], freq: null, label: originCode+'→'+destCode });
+    // ── Layout constants ──────────────────────────────────────────────────────
+    const PAD   = 22;
+    const origX = W * 0.33, origY = H / 2;
+    const destX = W * 0.67, destY = H / 2;
 
-    // Feeder hubs (left side) — they feed into origin airport
+    // Spread hub nodes vertically in left/right bands
+    function spreadY(count) {
+      if (count === 0) return [];
+      const usableH = H - PAD * 2;
+      const step = Math.min(36, usableH / count);
+      const start = H / 2 - (count - 1) * step / 2;
+      return Array.from({ length: count }, (_, i) => start + i * step);
+    }
+    const feederYs = spreadY(topF.length);
+    const onwardYs = spreadY(topO.length);
+
+    const feederX = PAD + 28;
+    const onwardX = W - PAD - 28;
+
+    // ── Build node and edge lists ─────────────────────────────────────────────
+    const nodes = [
+      { label: originCode, x: origX, y: origY, r: 16,
+        fill: PAL.originFill, border: PAL.originBorder,
+        type: 'origin', detail: originCode + ' (Origin)' },
+      { label: destCode,   x: destX, y: destY, r: 16,
+        fill: PAL.destFill,   border: PAL.destBorder,
+        type: 'dest',   detail: destCode + ' (Destination)' },
+    ];
+    const edges = [];
+
+    // Main route edge (bi-directional double line style)
+    edges.push({
+      x1: origX, y1: origY, x2: destX, y2: destY,
+      color: PAL.routeEdge, w: 3, dash: [], arrow: false,
+      midLabel: null,
+    });
+
+    // Feeder hubs
     topF.forEach((cr, i) => {
-      const hub = (cr.via || cr.connect_point || '').trim();
-      const al  = (cr.airline || '').trim();
+      const hub  = (cr.via || cr.connect_point || '').trim();
+      const al   = (cr.airline || '').trim();
       const freq = +(cr.weekly_freq || cr.frequency || 1);
       if (!hub) return;
-      const pos = feederPos[i];
-      const node = { id: 'f_' + hub, label: hub, x: pos.x, y: pos.y,
-                     color: COLORS.hub_f, r: Math.max(6, Math.min(11, 4 + Math.sqrt(freq))),
-                     type: 'hub_f', detail: `${hub}→${originCode} via ${al} (${freq}×/wk)` };
-      nodes.push(node);
+      const nx = feederX, ny = feederYs[i];
+      const r = Math.max(9, Math.min(15, 7 + Math.sqrt(freq) * 0.9));
+      nodes.push({ label: hub, x: nx, y: ny, r,
+                   fill: PAL.feederFill, border: PAL.feederBorder,
+                   type: 'hub_f', detail: hub + ' → ' + originCode + ' (' + al + ', ' + freq + '×/wk)' });
       const ratio = freq / maxFreq;
-      edges.push({ x1: pos.x, y1: pos.y, x2: origX, y2: origY,
-                   color: COLORS.hub_f, rgb: '245,158,11',
-                   w: Math.max(0.8, ratio * 3), dash: [], freq, label: hub });
-      // Show airline label along edge midpoint
-      if (al) {
-        edges.push({ x1: pos.x, y1: pos.y, x2: pos.x, y2: pos.y,
-                     _alLabel: al, _alX: (pos.x + origX)/2, _alY: (pos.y + origY)/2 - 7,
-                     color: COLORS.airline, rgb: '139,92,246', w: 0, dash: [], freq: null });
-      }
-    });
-
-    // Onward hubs (right side) — departures from destination
-    topO.forEach((cr, i) => {
-      const hub = (cr.via || cr.connect_point || '').trim();
-      const al  = (cr.airline || '').trim();
-      const freq = +(cr.weekly_freq || cr.frequency || 1);
-      if (!hub) return;
-      const pos = onwardPos[i];
-      const node = { id: 'o_' + hub, label: hub, x: pos.x, y: pos.y,
-                     color: COLORS.hub_o, r: Math.max(6, Math.min(11, 4 + Math.sqrt(freq))),
-                     type: 'hub_o', detail: `${destCode}→${hub} via ${al} (${freq}×/wk)` };
-      nodes.push(node);
-      const ratio = freq / maxFreq;
-      edges.push({ x1: destX, y1: destY, x2: pos.x, y2: pos.y,
-                   color: COLORS.hub_o, rgb: '232,121,249',
-                   w: Math.max(0.8, ratio * 3), dash: [4,3], freq, label: hub });
-      if (al) {
-        edges.push({ x1: pos.x, y1: pos.y, x2: pos.x, y2: pos.y,
-                     _alLabel: al, _alX: (destX + pos.x)/2, _alY: (destY + pos.y)/2 - 7,
-                     color: COLORS.airline, rgb: '139,92,246', w: 0, dash: [], freq: null });
-      }
-    });
-
-    // ── Draw function ──────────────────────────────────────────────────────────
-    function draw() {
-      ctx.clearRect(0, 0, W, H);
-
-      // Dark background + vignette
-      ctx.fillStyle = '#0c0b14';
-      ctx.fillRect(0, 0, W, H);
-      const vg = ctx.createRadialGradient(W/2, H/2, 0, W/2, H/2, Math.max(W, H) * 0.7);
-      vg.addColorStop(0, 'rgba(24,15,52,0.4)');
-      vg.addColorStop(1, 'rgba(0,0,0,0.7)');
-      ctx.fillStyle = vg;
-      ctx.fillRect(0, 0, W, H);
-
-      const alpha = Math.min(1, fadeP);
-
-      // Section labels
-      ctx.save();
-      ctx.globalAlpha = alpha * 0.45;
-      ctx.font = 'bold 8px system-ui,sans-serif';
-      ctx.fillStyle = '#94a3b8';
-      ctx.textAlign = 'center';
-      if (topF.length) ctx.fillText('◀ FEEDERS INTO ' + originCode, W * 0.17, 12);
-      if (topO.length) ctx.fillText('ONWARD FROM ' + destCode + ' ▶', W * 0.83, 12);
-      ctx.restore();
-
-      // Edges — glow composite
-      ctx.save();
-      ctx.globalCompositeOperation = 'lighter';
-      ctx.lineCap = 'round';
-      edges.forEach(e => {
-        if (!e.w || e._alLabel) return;
-        ctx.globalAlpha = alpha * (e.freq ? 0.55 : 0.25);
-        ctx.strokeStyle = `rgba(${e.rgb},1)`;
-        ctx.lineWidth = e.w;
-        ctx.setLineDash(e.dash);
-        ctx.beginPath();
-        ctx.moveTo(e.x1, e.y1);
-        ctx.lineTo(e.x2, e.y2);
-        ctx.stroke();
+      edges.push({
+        x1: nx, y1: ny, x2: origX, y2: origY,
+        color: PAL.feederEdge, w: Math.max(1, ratio * 3.5), dash: [],
+        arrow: true, arrowAt: 'end',
+        midLabel: al ? { text: al, color: PAL.alLabel } : null,
+        freqBadge: freq + '×',
       });
-      ctx.setLineDash([]);
+    });
+
+    // Onward hubs
+    topO.forEach((cr, i) => {
+      const hub  = (cr.via || cr.connect_point || '').trim();
+      const al   = (cr.airline || '').trim();
+      const freq = +(cr.weekly_freq || cr.frequency || 1);
+      if (!hub) return;
+      const nx = onwardX, ny = onwardYs[i];
+      const r = Math.max(9, Math.min(15, 7 + Math.sqrt(freq) * 0.9));
+      nodes.push({ label: hub, x: nx, y: ny, r,
+                   fill: PAL.onwardFill, border: PAL.onwardBorder,
+                   type: 'hub_o', detail: destCode + ' → ' + hub + ' (' + al + ', ' + freq + '×/wk)' });
+      const ratio = freq / maxFreq;
+      edges.push({
+        x1: destX, y1: destY, x2: nx, y2: ny,
+        color: PAL.onwardEdge, w: Math.max(1, ratio * 3.5), dash: [5, 3],
+        arrow: true, arrowAt: 'end',
+        midLabel: al ? { text: al, color: PAL.alLabel } : null,
+        freqBadge: freq + '×',
+      });
+    });
+
+    // ── Helper: draw arrowhead ────────────────────────────────────────────────
+    function drawArrow(x2, y2, ang, size, color) {
+      ctx.save();
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(x2, y2);
+      ctx.lineTo(x2 - size * Math.cos(ang - Math.PI / 6),
+                 y2 - size * Math.sin(ang - Math.PI / 6));
+      ctx.lineTo(x2 - size * Math.cos(ang + Math.PI / 6),
+                 y2 - size * Math.sin(ang + Math.PI / 6));
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // ── Draw ──────────────────────────────────────────────────────────────────
+    function draw(alpha) {
+      alpha = alpha === undefined ? 1 : alpha;
+
+      // White background
+      ctx.fillStyle = PAL.bg;
+      ctx.fillRect(0, 0, W, H);
+
+      // Subtle dot-grid (PyGraphistry style)
+      ctx.save();
+      ctx.globalAlpha = alpha * 0.35;
+      ctx.fillStyle = '#cbd5e1';
+      const gStep = 24;
+      for (let gx = gStep; gx < W; gx += gStep)
+        for (let gy = gStep; gy < H; gy += gStep) {
+          ctx.beginPath();
+          ctx.arc(gx, gy, 0.8, 0, Math.PI * 2);
+          ctx.fill();
+        }
       ctx.restore();
 
-      // Arrowheads on feeder/onward edges
+      // Section banners
+      ctx.save();
+      ctx.globalAlpha = alpha * 0.85;
+      ctx.font = 'bold 8px system-ui,sans-serif';
+      ctx.fillStyle = PAL.subtext;
+      ctx.textAlign = 'center';
+      if (topF.length) {
+        ctx.fillText('◀  FEEDERS INTO ' + originCode, feederX + (origX - feederX) / 2, 10);
+      }
+      if (topO.length) {
+        ctx.fillText('ONWARD FROM ' + destCode + '  ▶', destX + (onwardX - destX) / 2, 10);
+      }
+      ctx.restore();
+
+      // ── Edges ───────────────────────────────────────────────────────────────
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.lineCap = 'round';
+
       edges.forEach(e => {
-        if (!e.freq || e._alLabel) return;
         const dx = e.x2 - e.x1, dy = e.y2 - e.y1;
         const dist = Math.hypot(dx, dy);
-        if (dist < 15) return;
-        const ang = Math.atan2(dy, dx);
-        const ax = e.x2 - Math.cos(ang)*14, ay = e.y2 - Math.sin(ang)*14;
-        ctx.save();
-        ctx.globalAlpha = alpha * 0.7;
-        ctx.fillStyle = e.color;
+        if (dist < 1) return;
+        const ang  = Math.atan2(dy, dx);
+
+        // Shorten line to not overdraw inside node circles
+        const srcR = (e === edges[0]) ? 16 : (e.x1 < W / 2 ? 0 : 16);
+        const tgtR = 16;
+        const sx = e.x1 + Math.cos(ang) * srcR;
+        const sy = e.y1 + Math.sin(ang) * srcR;
+        const ex = e.x2 - Math.cos(ang) * (tgtR + (e.arrow ? 5 : 0));
+        const ey = e.y2 - Math.sin(ang) * (tgtR + (e.arrow ? 5 : 0));
+
+        ctx.strokeStyle = e.color;
+        ctx.lineWidth   = e.w;
+        ctx.setLineDash(e.dash);
         ctx.beginPath();
-        ctx.moveTo(ax + Math.cos(ang)*6, ay + Math.sin(ang)*6);
-        ctx.lineTo(ax - Math.cos(ang-Math.PI/7)*5, ay - Math.sin(ang-Math.PI/7)*5);
-        ctx.lineTo(ax - Math.cos(ang+Math.PI/7)*5, ay - Math.sin(ang+Math.PI/7)*5);
-        ctx.closePath();
-        ctx.fill();
-        ctx.restore();
-      });
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(ex, ey);
+        ctx.stroke();
+        ctx.setLineDash([]);
 
-      // Frequency labels on edges
-      edges.forEach(e => {
-        if (!e.freq || !e.label) return;
-        const mx = (e.x1 + e.x2) / 2, my = (e.y1 + e.y2) / 2;
-        ctx.save();
-        ctx.globalAlpha = alpha * 0.8;
-        ctx.font = '7px system-ui,sans-serif';
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        const txt = e.freq + '×';
-        const tw = ctx.measureText(txt).width;
-        ctx.fillStyle = 'rgba(8,6,18,0.75)';
-        ctx.fillRect(mx - tw/2 - 2, my - 5, tw + 4, 10);
-        ctx.fillStyle = e.color;
-        ctx.fillText(txt, mx, my);
-        ctx.restore();
-      });
+        // Arrowhead
+        if (e.arrow) {
+          drawArrow(e.x2 - Math.cos(ang) * tgtR,
+                    e.y2 - Math.sin(ang) * tgtR,
+                    ang, 7, e.color);
+        }
 
-      // Airline labels along edges
-      edges.forEach(e => {
-        if (!e._alLabel) return;
-        ctx.save();
-        ctx.globalAlpha = alpha * 0.65;
-        ctx.font = '7px system-ui,sans-serif';
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        const tw = ctx.measureText(e._alLabel).width;
-        ctx.fillStyle = 'rgba(8,6,18,0.65)';
-        ctx.fillRect(e._alX - tw/2 - 2, e._alY - 5, tw + 4, 10);
-        ctx.fillStyle = e.color;
-        ctx.fillText(e._alLabel, e._alX, e._alY);
-        ctx.restore();
-      });
+        // Frequency badge (small pill near midpoint)
+        if (e.freqBadge) {
+          const mx = (sx + ex) / 2 + Math.sin(ang) * 9;
+          const my = (sy + ey) / 2 - Math.cos(ang) * 9;
+          ctx.font = 'bold 7px system-ui,sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          const bw = ctx.measureText(e.freqBadge).width + 6;
+          ctx.fillStyle = '#ffffff';
+          ctx.strokeStyle = e.color;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.rect(mx - bw/2, my - 6, bw, 12);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = PAL.freqLabel;
+          ctx.fillText(e.freqBadge, mx, my);
+        }
 
-      // Nodes
+        // Airline code label (small, near 1/3 of edge)
+        if (e.midLabel) {
+          const lx = e.x1 + (e.x2 - e.x1) * 0.38 + Math.sin(ang) * 11;
+          const ly = e.y1 + (e.y2 - e.y1) * 0.38 - Math.cos(ang) * 11;
+          ctx.font = '7px system-ui,sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillStyle = e.midLabel.color;
+          ctx.fillText(e.midLabel.text, lx, ly);
+        }
+      });
+      ctx.restore();
+
+      // ── Nodes ───────────────────────────────────────────────────────────────
       nodes.forEach(n => {
         ctx.save();
         ctx.globalAlpha = alpha;
-        ctx.shadowColor = n.color;
-        ctx.shadowBlur  = (n.type === 'origin' || n.type === 'dest') ? 22 : 10;
-        ctx.fillStyle   = n.color;
+
+        // Drop shadow (subtle, no glow)
+        ctx.shadowColor   = 'rgba(0,0,0,0.12)';
+        ctx.shadowBlur    = 6;
+        ctx.shadowOffsetY = 2;
+
+        // Fill
+        ctx.fillStyle = n.fill;
         ctx.beginPath();
         ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
         ctx.fill();
-        ctx.shadowBlur = 0;
-        // Specular
-        ctx.fillStyle = 'rgba(255,255,255,0.2)';
-        ctx.beginPath();
-        ctx.arc(n.x - n.r*0.25, n.y - n.r*0.3, n.r * 0.4, 0, Math.PI * 2);
-        ctx.fill();
+
+        // Border
+        ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+        ctx.strokeStyle = n.border;
+        ctx.lineWidth   = 2;
+        ctx.stroke();
+
         ctx.restore();
 
-        // Label
+        // Label (inside node for large nodes, below for small)
         ctx.save();
-        ctx.globalAlpha = alpha * 0.95;
+        ctx.globalAlpha = alpha;
         const isMain = n.type === 'origin' || n.type === 'dest';
-        ctx.font = (isMain ? 'bold 9px' : '8px') + ' system-ui,sans-serif';
-        ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-        const ly = n.y + n.r + 3;
-        const tw = ctx.measureText(n.label).width;
-        ctx.fillStyle = 'rgba(8,6,18,0.85)';
-        ctx.fillRect(n.x - tw/2 - 3, ly, tw + 6, 11);
-        ctx.fillStyle = n.color;
-        ctx.fillText(n.label, n.x, ly + 1);
+        ctx.font      = (isMain ? 'bold 9px' : 'bold 8px') + ' system-ui,sans-serif';
+        ctx.textAlign = 'center';
+
+        if (isMain) {
+          // Label inside node
+          ctx.textBaseline = 'middle';
+          ctx.fillStyle    = '#ffffff';
+          ctx.fillText(n.label, n.x, n.y);
+        } else {
+          // Label below node
+          ctx.textBaseline = 'top';
+          const ly = n.y + n.r + 3;
+          const tw = ctx.measureText(n.label).width;
+          ctx.fillStyle = 'rgba(255,255,255,0.9)';
+          ctx.fillRect(n.x - tw/2 - 3, ly, tw + 6, 12);
+          ctx.fillStyle = PAL.text;
+          ctx.fillText(n.label, n.x, ly + 1);
+        }
         ctx.restore();
       });
     }
 
-    // ── Animation: smooth fade-in then idle ────────────────────────────────────
-    let rafId = null;
-    const startTs = performance.now();
+    // ── Smooth fade-in ────────────────────────────────────────────────────────
+    const t0 = performance.now();
     function frame(ts) {
-      fadeP = Math.min(1, (ts - startTs) / 900);
-      draw();
-      if (fadeP < 1) rafId = requestAnimationFrame(frame);
-      else draw(); // final stable draw
+      const p = Math.min(1, (ts - t0) / 600);
+      draw(p);
+      if (p < 1) requestAnimationFrame(frame);
     }
-    rafId = requestAnimationFrame(frame);
+    requestAnimationFrame(frame);
 
-    // Tooltip on hover
+    // ── Hover tooltip ─────────────────────────────────────────────────────────
     canvas.addEventListener('mousemove', ev => {
       const rect = canvas.getBoundingClientRect();
       const mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
-      const hit = nodes.find(n => Math.hypot(n.x - mx, n.y - my) < n.r + 5);
-      canvas.title = hit ? (hit.detail || hit.label) : '';
+      const hit = nodes.find(n => Math.hypot(n.x - mx, n.y - my) <= n.r + 4);
+      canvas.title = hit ? hit.detail : '';
+      canvas.style.cursor = hit ? 'pointer' : 'default';
     });
 
-  } catch(err) {
+  } catch (err) {
     console.error('[FlowKG] render error:', err);
   }
 }
@@ -1721,10 +1769,10 @@ function renderLocalFlowSplit(viz) {
       <div class="lf-connect-title">🔗 Top Connecting Routes (Flow Contributors)</div>
       <div id="${kgId}" class="lf-kg-wrap"></div>
       <div class="lf-kg-legend">
-        <span class="lf-kg-legend-item"><span class="lf-kg-legend-dot" style="background:#10b981"></span>Origin airport</span>
-        <span class="lf-kg-legend-item"><span class="lf-kg-legend-dot" style="background:#2065d1"></span>Destination airport</span>
-        <span class="lf-kg-legend-item"><span class="lf-kg-legend-dot" style="background:#f59e0b"></span>Feeder hub ▶</span>
-        <span class="lf-kg-legend-item"><span class="lf-kg-legend-dot" style="background:#e879f9"></span>Onward hub ╌</span>
+        <span class="lf-kg-legend-item"><span class="lf-kg-legend-dot" style="background:#10b981"></span>Origin</span>
+        <span class="lf-kg-legend-item"><span class="lf-kg-legend-dot" style="background:#3b82f6"></span>Destination</span>
+        <span class="lf-kg-legend-item"><span class="lf-kg-legend-dot" style="background:#f97316"></span>Feeder hub ▶</span>
+        <span class="lf-kg-legend-item"><span class="lf-kg-legend-dot" style="background:#6366f1"></span>Onward hub ╌ ╌</span>
       </div>
     </div>`;
   }
