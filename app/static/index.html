@@ -216,12 +216,11 @@
     .chart-area { padding: 8px 0; }
     .chart-canvas-wrap { position: relative; width: 100%; }
     canvas { width: 100% !important; }
-
-    /* Legend for pie */
-    .chart-legend-wrap { display: flex; flex-direction: column; gap: 5px; margin-top: 10px; max-height: 200px; overflow-y: auto; }
-    .legend-item { display: flex; align-items: center; gap: 8px; font-size: 0.78rem; color: #4a5568; }
-    .legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
-    .legend-val { margin-left: auto; font-weight: 600; color: #2d3748; }
+    /* Side-by-side bar + pie in one card */
+    .chart-pair-body { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
+    .chart-pair-body .chart-area { flex: 1; min-width: 220px; }
+    .chart-pair-body .chart-area.pie-area { flex: 0 0 240px; display: flex; justify-content: center; }
+    .chart-pair-body .chart-area.pie-area .chart-canvas-wrap { max-width: 220px; }
 
     /* ── insightsDB-style Table ── */
     .dyn-table-wrap { overflow-x: auto; max-height: 420px; overflow-y: auto; border-radius: 6px; }
@@ -1320,21 +1319,39 @@ function renderAnalysisContent(vizs, container) {
     container.appendChild(card);
   });
 
-  // 4. Charts in 2-col grid
+  // 4. Charts — pair a bar with a pie if both present; otherwise 2-col grid
   if (chartVizs.length) {
-    const grid = document.createElement('div');
-    grid.className = 'chart-grid';
+    const barVizs = chartVizs.filter(v => ['bar','horizontal_bar'].includes(v.type));
+    const pieVizs = chartVizs.filter(v => v.type === 'pie');
 
-    // Try to pair tables with charts by title similarity
-    chartVizs.forEach(cv => {
-      const pairedTable = tableVizs.find(tv => titlesRelated(tv.title, cv.title));
-      if (pairedTable) {
-        grid.appendChild(renderDualCard(pairedTable, cv));
-      } else {
-        grid.appendChild(renderSingleChartCard(cv));
+    if (barVizs.length >= 1 && pieVizs.length >= 1) {
+      // First bar + first pie go side-by-side in one card
+      container.appendChild(renderSideBySideChartCard(barVizs[0], pieVizs[0]));
+      // Any leftovers go in the grid
+      const rest = [...barVizs.slice(1), ...pieVizs.slice(1)];
+      if (rest.length) {
+        const grid = document.createElement('div');
+        grid.className = 'chart-grid';
+        rest.forEach(cv => {
+          const pairedTable = tableVizs.find(tv => titlesRelated(tv.title, cv.title));
+          grid.appendChild(pairedTable ? renderDualCard(pairedTable, cv) : renderSingleChartCard(cv));
+        });
+        container.appendChild(grid);
       }
-    });
-    container.appendChild(grid);
+    } else {
+      const grid = document.createElement('div');
+      grid.className = 'chart-grid';
+      // Try to pair tables with charts by title similarity
+      chartVizs.forEach(cv => {
+        const pairedTable = tableVizs.find(tv => titlesRelated(tv.title, cv.title));
+        if (pairedTable) {
+          grid.appendChild(renderDualCard(pairedTable, cv));
+        } else {
+          grid.appendChild(renderSingleChartCard(cv));
+        }
+      });
+      container.appendChild(grid);
+    }
   }
 }
 
@@ -1477,6 +1494,27 @@ function renderSingleChartCard(viz) {
   return card;
 }
 
+function renderSideBySideChartCard(barViz, pieViz) {
+  const card = document.createElement('div');
+  card.className = 'viz-card';
+  const hdr = document.createElement('div');
+  hdr.className = 'viz-card-header';
+  const barTitle = barViz.title || '';
+  const pieTitle = pieViz.title || '';
+  const title = barTitle === pieTitle ? barTitle
+    : barTitle && pieTitle ? `${barTitle} · ${pieTitle}` : barTitle || pieTitle;
+  hdr.innerHTML = `<span class="viz-card-title">${escHtml(title)}</span>`;
+  card.appendChild(hdr);
+  const body = document.createElement('div');
+  body.className = 'viz-body chart-pair-body';
+  body.appendChild(renderBarView(barViz));
+  const pieArea = renderPieView(pieViz);
+  pieArea.classList.add('pie-area');
+  body.appendChild(pieArea);
+  card.appendChild(body);
+  return card;
+}
+
 function switchTab(uid, view, btn) {
   const body = document.getElementById(uid);
   if (!body) return;
@@ -1497,6 +1535,26 @@ function titlesRelated(t1, t2) {
 }
 
 // ── Table renderer ─────────────────────────────────────────────────────────
+// Decode SSIM frequency string e.g. "1234567" → "Daily", "135" → "M W F"
+function _fmtFrequency(val) {
+  const s = String(val ?? '').trim();
+  if (!s || !/^[1-7]+$/.test(s)) return s || '—';
+  if (s === '1234567') return 'Daily';
+  const DAY = ['M','T','W','T','F','S','S'];
+  const abbr = s.split('').map(d => DAY[parseInt(d, 10) - 1]).join(' ');
+  // Detect common patterns
+  if (s === '12345') return 'Mon–Fri';
+  if (s === '67')    return 'Sat–Sun';
+  if (s === '1')     return 'Mon';
+  if (s === '2')     return 'Tue';
+  if (s === '3')     return 'Wed';
+  if (s === '4')     return 'Thu';
+  if (s === '5')     return 'Fri';
+  if (s === '6')     return 'Sat';
+  if (s === '7')     return 'Sun';
+  return abbr;
+}
+
 function renderTableView(viz) {
   const wrap = document.createElement('div');
   const columns = viz.columns || [];
@@ -1513,8 +1571,10 @@ function renderTableView(viz) {
   table.className = `dyn-table${tableStyle ? ' style-' + tableStyle : ''}`;
 
   // Detect pct/num columns
-  const pctCols = columns.filter(c => /pct|share|percent/i.test(c));
+  const pctCols  = columns.filter(c => /pct|share|percent/i.test(c));
+  const freqCols = columns.filter(c => /^(freq|frequency|days_of_op|day_of_week|days_of_week)/i.test(c));
   const numCols = columns.filter(c => {
+    if (freqCols.includes(c)) return false; // never treat frequency as a plain number
     const vals = rows.slice(0,10).map(r => r[c]).filter(v => v != null);
     return vals.length && vals.every(v => typeof v === 'number' || (!isNaN(parseFloat(v)) && v !== ''));
   });
@@ -1553,12 +1613,14 @@ function renderTableView(viz) {
       columns.forEach(col => {
         const td = document.createElement('td');
         const val = row[col];
-        const isPct = pctCols.includes(col);
-        const isNum = numCols.includes(col) || typeof val === 'number';
-        if (isPct) td.className = 'pct-cell';
+        const isPct  = pctCols.includes(col);
+        const isFreq = freqCols.includes(col);
+        const isNum  = numCols.includes(col) || typeof val === 'number';
+        if (isPct)  td.className = 'pct-cell';
         else if (isNum) td.className = 'num-cell';
-        if (val == null) { td.textContent = '—'; }
-        else if (isPct) { td.textContent = typeof val === 'number' ? val.toFixed(1) + '%' : String(val); }
+        if (val == null)  { td.textContent = '—'; }
+        else if (isFreq)  { td.textContent = _fmtFrequency(val); }
+        else if (isPct)   { td.textContent = typeof val === 'number' ? val.toFixed(1) + '%' : String(val); }
         else if (typeof val === 'number') { td.textContent = val.toLocaleString(undefined, {maximumFractionDigits:2}); }
         else { td.textContent = String(val); }
         tr.appendChild(td);
@@ -1578,6 +1640,34 @@ function renderTableView(viz) {
 }
 
 // ── Bar chart renderer ─────────────────────────────────────────────────────
+// Inline plugin: draws values above (vertical) or beside (horizontal) each bar
+const _barLabelPlugin = {
+  id: 'barLabel',
+  afterDatasetsDraw(chart) {
+    const { ctx } = chart;
+    chart.data.datasets.forEach((ds, di) => {
+      const meta = chart.getDatasetMeta(di);
+      const isHoriz = chart.options.indexAxis === 'y';
+      meta.data.forEach((bar, i) => {
+        const val = ds.data[i];
+        if (val == null) return;
+        const txt = typeof val === 'number' ? val.toLocaleString(undefined, {maximumFractionDigits:1}) : String(val);
+        ctx.save();
+        ctx.font = 'bold 10px system-ui,sans-serif';
+        ctx.fillStyle = '#2d3748';
+        if (isHoriz) {
+          ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+          ctx.fillText(txt, bar.x + 4, bar.y);
+        } else {
+          ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+          ctx.fillText(txt, bar.x, bar.y - 3);
+        }
+        ctx.restore();
+      });
+    });
+  }
+};
+
 function renderBarView(viz) {
   const area = document.createElement('div');
   area.className = 'chart-area';
@@ -1588,7 +1678,7 @@ function renderBarView(viz) {
   canvas.id = cid;
   const isHoriz = viz.type === 'horizontal_bar';
   const nLabels = (viz.data?.labels || []).length;
-  canvas.height = isHoriz ? Math.max(160, nLabels * 26) : 240;
+  canvas.height = isHoriz ? Math.max(160, nLabels * 28) : 220;
   canvasWrap.appendChild(canvas);
   area.appendChild(canvasWrap);
 
@@ -1599,6 +1689,7 @@ function renderBarView(viz) {
     if (!ctx) return;
     _charts[cid] = new Chart(ctx, {
       type: 'bar',
+      plugins: [_barLabelPlugin],
       data: {
         labels: data.labels || [],
         datasets: [{
@@ -1611,10 +1702,24 @@ function renderBarView(viz) {
       options: {
         indexAxis: isHoriz ? 'y' : 'x',
         responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => ` ${ctx.raw}` } } },
+        layout: { padding: { top: isHoriz ? 4 : 20, right: isHoriz ? 60 : 8, bottom: 4, left: 8 } },
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: ctx => ` ${ctx.raw?.toLocaleString?.() ?? ctx.raw}` } }
+        },
         scales: {
-          x: { grid: { color: '#f0f4f8' }, ticks: { font: { size: 11 }, color: '#718096' } },
-          y: { grid: { color: '#f0f4f8' }, ticks: { font: { size: 11 }, color: '#718096' } },
+          x: {
+            display: isHoriz ? false : true,
+            border: { display: false },
+            grid: { display: false },
+            ticks: { font: { size: 10 }, color: '#718096', maxRotation: 30 }
+          },
+          y: {
+            display: isHoriz ? true : false,
+            border: { display: false },
+            grid: { display: false },
+            ticks: { font: { size: 10 }, color: '#718096' }
+          },
         }
       }
     });
@@ -1623,34 +1728,61 @@ function renderBarView(viz) {
 }
 
 // ── Pie / Doughnut renderer ────────────────────────────────────────────────
+// Inline plugin: draws pct% + short label on each doughnut segment
+const _pieLabelPlugin = {
+  id: 'pieLabel',
+  afterDatasetsDraw(chart) {
+    const { ctx } = chart;
+    const ds    = chart.data.datasets[0];
+    const total = ds.data.reduce((s, v) => s + (v || 0), 0);
+    chart.getDatasetMeta(0).data.forEach((arc, i) => {
+      const val = ds.data[i] || 0;
+      const pct = total > 0 ? (val / total * 100) : 0;
+      if (pct < 4) return; // skip tiny slices — too small to label
+      const angle = (arc.startAngle + arc.endAngle) / 2;
+      const r     = (arc.innerRadius + arc.outerRadius) / 2;
+      const x     = arc.x + Math.cos(angle) * r;
+      const y     = arc.y + Math.sin(angle) * r;
+      const label = chart.data.labels[i] || '';
+      const shortLbl = label.length > 8 ? label.slice(0, 7) + '…' : label;
+      ctx.save();
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      if (pct >= 10) {
+        // Two lines: label on top, pct below
+        ctx.font = 'bold 9px system-ui,sans-serif';
+        ctx.fillStyle = 'rgba(255,255,255,0.95)';
+        ctx.fillText(shortLbl, x, y - 6);
+        ctx.font = 'bold 10px system-ui,sans-serif';
+        ctx.fillText(pct.toFixed(1) + '%', x, y + 6);
+      } else {
+        ctx.font = 'bold 10px system-ui,sans-serif';
+        ctx.fillStyle = 'rgba(255,255,255,0.95)';
+        ctx.fillText(pct.toFixed(1) + '%', x, y);
+      }
+      ctx.restore();
+    });
+  }
+};
+
 function renderPieView(viz) {
   const area = document.createElement('div');
   area.className = 'chart-area';
   const canvasWrap = document.createElement('div');
   canvasWrap.className = 'chart-canvas-wrap';
-  canvasWrap.style.maxWidth = '220px';
   const canvas = document.createElement('canvas');
   const cid = 'chart-' + (_chartSeq++);
-  canvas.id = cid; canvas.width = 200; canvas.height = 200;
+  canvas.id = cid; canvas.width = 220; canvas.height = 220;
   canvasWrap.appendChild(canvas);
   area.appendChild(canvasWrap);
   const slices = viz.slices || [];
   const total  = slices.reduce((s, x) => s + x.value, 0);
-  const legend = document.createElement('div');
-  legend.className = 'chart-legend-wrap';
-  slices.forEach((s, i) => {
-    const pct = total > 0 ? (s.value / total * 100).toFixed(1) : '0.0';
-    const item = document.createElement('div'); item.className = 'legend-item';
-    item.innerHTML = `<span class="legend-dot" style="background:${PIE_COLORS[i%PIE_COLORS.length]}"></span><span>${escHtml(s.label)}</span><span class="legend-val">${pct}%</span>`;
-    legend.appendChild(item);
-  });
-  area.appendChild(legend);
   setTimeout(() => {
     if (_charts[cid]) { _charts[cid].destroy(); delete _charts[cid]; }
     const ctx = document.getElementById(cid);
     if (!ctx) return;
     _charts[cid] = new Chart(ctx, {
       type: 'doughnut',
+      plugins: [_pieLabelPlugin],
       data: {
         labels: slices.map(s => s.label),
         datasets: [{ data: slices.map(s => s.value), backgroundColor: slices.map((_, i) => PIE_COLORS[i%PIE_COLORS.length]), borderColor: '#fff', borderWidth: 2 }]
@@ -1659,9 +1791,9 @@ function renderPieView(viz) {
         responsive: false,
         plugins: {
           legend: { display: false },
-          tooltip: { callbacks: { label: ctx => { const pct = total > 0 ? (ctx.raw/total*100).toFixed(1) : 0; return ` ${ctx.label}: ${ctx.raw} (${pct}%)`; } } }
+          tooltip: { callbacks: { label: ctx => { const pct = total > 0 ? (ctx.raw/total*100).toFixed(1) : 0; return ` ${ctx.label}: ${ctx.raw?.toLocaleString?.()} (${pct}%)`; } } }
         },
-        cutout: '55%',
+        cutout: '52%',
       }
     });
   }, 0);
