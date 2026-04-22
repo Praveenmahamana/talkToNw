@@ -520,6 +520,112 @@ async def delete_session(session_id: str):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Workset comparison endpoints
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/workset/list", tags=["Workset"])
+async def list_worksets():
+    """Return all workset directories discoverable on the server."""
+    from app.services.workset_service import get_workset_dirs
+    return {"worksets": get_workset_dirs()}
+
+
+@router.post("/workset/load-b", tags=["Workset"])
+async def load_workset_b(body: dict):
+    """Load a second workset from *path* into _b tables for comparison."""
+    from app.services.workset_service import load_workset_b as _load_b
+    path = body.get("path", "").strip()
+    if not path:
+        raise HTTPException(status_code=400, detail="path is required")
+    try:
+        result = _load_b(path)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"load-b error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/workset/compare", tags=["Workset"])
+async def compare_worksets(origin: str = "", dest: str = "", airline: str = "", top_n: int = 50):
+    """
+    Compare workset A (primary) vs workset B (loaded via /workset/load-b).
+    Returns per-route deltas: demand, spill, load factor, capacity, status.
+    """
+    from app.services.workset_service import compare_worksets as _compare
+    try:
+        return _compare(origin=origin, dest=dest, airline=airline, top_n=top_n)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"compare error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/workset/ai-summary", tags=["Workset"])
+async def workset_ai_summary(body: dict):
+    """
+    Ask the LM to narrate the key differences between two worksets.
+    Accepts the compare result payload and returns a plain-English briefing.
+    """
+    from app.ai.vertex_client import generate_content, extract_text, is_available
+    import json as _json
+
+    if not is_available():
+        return {"summary": "AI unavailable.", "bullets": []}
+
+    summary = body.get("summary", {})
+    routes  = body.get("routes",  [])[:15]  # top 15 for brevity
+    ws_a    = body.get("workset_a", "A")
+    ws_b    = body.get("workset_b", "B")
+
+    route_lines = "\n".join(
+        f"  {r['origin']}→{r['dest']}: demand Δ{r['demand_delta']:+.0f}  spill Δ{r['spill_delta']:+.0f}  LF {r['lf_a_pct']}%→{r['lf_b_pct']}%  [{r['status']}]"
+        for r in routes
+    )
+
+    msg = f"""You are a senior airline network analyst comparing two schedule worksets.
+
+WORKSET A: {ws_a}
+WORKSET B: {ws_b}
+
+SUMMARY CHANGES:
+  Demand delta:         {summary.get('total_demand_delta', 0):+,} pax
+  Spill delta:          {summary.get('total_spill_delta', 0):+,} pax
+  New routes:           {summary.get('new_routes', 0)}
+  Dropped routes:       {summary.get('dropped_routes', 0)}
+  Improved routes:      {summary.get('improved_routes', 0)}
+  Deteriorated routes:  {summary.get('deteriorated_routes', 0)}
+
+TOP ROUTE CHANGES (by demand delta):
+{route_lines}
+
+Write a concise analyst briefing in this JSON (no fences):
+{{"headline":"One-line summary of the most significant change","narrative":"3-4 sentences: what changed most, winners and losers, net demand/spill impact","bullets":["Key finding 1","Key finding 2","Key finding 3","Key finding 4 (optional)"],"recommendation":"One specific action the network team should take"}}"""
+
+    try:
+        resp = generate_content(
+            contents=[{"role": "user", "parts": [{"text": msg}]}],
+            system_instruction="You are a senior airline network analyst. Reply only with the requested JSON — no markdown, no preamble.",
+            temperature=0.3,
+        )
+        raw = (extract_text(resp) or "").strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"): raw = raw[4:]
+        return _json.loads(raw.strip())
+    except Exception as e:
+        logger.warning(f"workset ai-summary error: {e}")
+        return {
+            "headline": f"{ws_b} vs {ws_a}: {summary.get('total_demand_delta', 0):+,} pax demand change",
+            "narrative": f"Comparing {ws_a} and {ws_b}: {summary.get('new_routes',0)} new routes, {summary.get('dropped_routes',0)} dropped, net demand delta {summary.get('total_demand_delta',0):+,} pax.",
+            "bullets": [],
+            "recommendation": "Review the top route deltas manually."
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Schedule search
 # ─────────────────────────────────────────────────────────────────────────────
 

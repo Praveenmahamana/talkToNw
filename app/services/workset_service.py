@@ -431,6 +431,226 @@ def is_loaded() -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Workset B — second scenario loader
+# ─────────────────────────────────────────────────────────────────────────────
+
+_WORKSET_B_PATH: Optional[str] = None
+
+
+def get_workset_dirs() -> list:
+    """
+    Discover all valid workset directories sibling to the current workset.
+    A valid workset dir must contain out/BASEDATA.dat.
+    """
+    wd = _get_workset_dir()
+    parent = wd.parent
+    found = []
+    try:
+        for d in sorted(parent.iterdir()):
+            if d.is_dir() and (d / "out" / "BASEDATA.dat").exists():
+                found.append({"name": d.name, "path": str(d), "current": d == wd})
+    except Exception:
+        pass
+    # Also include the current workset even if somehow not found
+    if not any(f["current"] for f in found):
+        found.insert(0, {"name": wd.name, "path": str(wd), "current": True})
+    return found
+
+
+def load_workset_b(path: str) -> dict:
+    """
+    Load a second workset from *path* into DuckDB tables suffixed with _b.
+    Returns a status dict.
+    """
+    global _WORKSET_B_PATH
+    conn = get_connection()
+
+    # Drop any existing _b tables
+    for tbl in ("workset_base_b", "workset_spill_b"):
+        try:
+            conn.execute(f"DROP TABLE IF EXISTS {tbl}")
+        except Exception:
+            pass
+
+    wd = Path(path)
+    if not wd.exists():
+        raise ValueError(f"Path not found: {path}")
+
+    errors = []
+    counts = {}
+
+    # Load BASEDATA into workset_base_b
+    base_path = wd / "out" / "BASEDATA.dat"
+    if base_path.exists():
+        try:
+            conn.execute(f"""
+                CREATE TABLE workset_base_b AS
+                SELECT
+                    TRIM(column01)                          AS origin,
+                    TRIM(column02)                          AS dest,
+                    column04                                AS dep_time,
+                    column05                                AS arr_time,
+                    TRY_CAST(column06 AS INTEGER)           AS block_time,
+                    TRY_CAST(column07 AS INTEGER)           AS distance_mi,
+                    column08                                AS op_airline,
+                    column09                                AS aircraft_type,
+                    TRY_CAST(column10 AS INTEGER)           AS cap_total,
+                    TRY_CAST(column11 AS FLOAT)             AS booked_pax,
+                    TRY_CAST(column12 AS FLOAT)             AS demand_pax,
+                    TRY_CAST(column14 AS FLOAT)             AS spill_pax,
+                    TRY_CAST(column15 AS INTEGER)           AS day_of_week,
+                    TRY_CAST(column16 AS INTEGER)           AS stops,
+                    column18                                AS mkt_airline,
+                    TRY_CAST(column20 AS INTEGER)           AS mct_dep,
+                    TRY_CAST(column21 AS INTEGER)           AS mct_arr
+                FROM read_csv('{_csv_path(base_path)}',
+                              header=false, delim=',', null_padding=true,
+                              all_varchar=true, parallel=true)
+                WHERE column01 IS NOT NULL
+                  AND LENGTH(TRIM(column01)) = 3
+                  AND LENGTH(TRIM(column02)) = 3
+            """)
+            counts["base"] = conn.execute("SELECT COUNT(*) FROM workset_base_b").fetchone()[0]
+        except Exception as e:
+            errors.append(f"BASEDATA: {e}")
+    else:
+        errors.append("BASEDATA.dat not found")
+
+    # Load SPILLDATA into workset_spill_b (optional — large file)
+    spill_path = wd / "out" / "SPILLDATA.dat"
+    if spill_path.exists():
+        try:
+            conn.execute(f"""
+                CREATE TABLE workset_spill_b AS
+                SELECT
+                    column00 AS origin, column01 AS dest,
+                    column02 AS dep_time,
+                    TRY_CAST(column04 AS INTEGER) AS cap_total,
+                    TRY_CAST(column08 AS FLOAT)   AS lf_pax,
+                    TRY_CAST(column12 AS FLOAT)   AS spill_pax,
+                    TRY_CAST(column14 AS FLOAT)   AS recap_pax,
+                    TRY_CAST(column16 AS FLOAT)   AS total_lf_pax,
+                    TRY_CAST(column23 AS FLOAT)   AS mkt_share,
+                    column24                      AS airline
+                FROM read_csv('{_csv_path(spill_path)}',
+                              header=false, delim=',', null_padding=true,
+                              all_varchar=true, parallel=true)
+                WHERE column00 IS NOT NULL
+                  AND LENGTH(TRIM(column00)) = 3
+                  AND LENGTH(TRIM(column01)) = 3
+            """)
+            counts["spill"] = conn.execute("SELECT COUNT(*) FROM workset_spill_b").fetchone()[0]
+        except Exception as e:
+            errors.append(f"SPILLDATA: {e}")
+
+    _WORKSET_B_PATH = path
+    return {"loaded": not errors, "path": path, "name": wd.name, "counts": counts, "errors": errors}
+
+
+def compare_worksets(origin: str = "", dest: str = "", airline: str = "", top_n: int = 50) -> dict:
+    """
+    FULL OUTER JOIN workset_base vs workset_base_b, returning per-route deltas.
+    Returns summary metrics + top_n route rows sorted by |demand_delta|.
+    """
+    conn = get_connection()
+    if not _table_exists(conn, "workset_base_b"):
+        raise ValueError("Workset B not loaded. Call load_workset_b first.")
+
+    where_a = where_b = "1=1"
+    filters = []
+    if origin:
+        filters.append(f"origin = '{origin.upper()}'")
+    if dest:
+        filters.append(f"dest = '{dest.upper()}'")
+    if airline:
+        filters.append(f"op_airline = '{airline.upper()}'")
+    if filters:
+        clause = " AND ".join(filters)
+        where_a = where_b = clause
+
+    sql = f"""
+    WITH a AS (
+        SELECT origin, dest,
+               COUNT(*)                  AS flights_a,
+               SUM(cap_total)            AS seats_a,
+               SUM(demand_pax)           AS demand_a,
+               SUM(spill_pax)            AS spill_a,
+               AVG(CASE WHEN cap_total > 0 THEN booked_pax / cap_total END) AS lf_a
+        FROM workset_base
+        WHERE {where_a}
+        GROUP BY origin, dest
+    ),
+    b AS (
+        SELECT origin, dest,
+               COUNT(*)                  AS flights_b,
+               SUM(cap_total)            AS seats_b,
+               SUM(demand_pax)           AS demand_b,
+               SUM(spill_pax)            AS spill_b,
+               AVG(CASE WHEN cap_total > 0 THEN booked_pax / cap_total END) AS lf_b
+        FROM workset_base_b
+        WHERE {where_b}
+        GROUP BY origin, dest
+    )
+    SELECT
+        COALESCE(a.origin, b.origin)  AS origin,
+        COALESCE(a.dest,   b.dest)    AS dest,
+        COALESCE(a.flights_a, 0)      AS flights_a,
+        COALESCE(b.flights_b, 0)      AS flights_b,
+        COALESCE(a.seats_a,   0)      AS seats_a,
+        COALESCE(b.seats_b,   0)      AS seats_b,
+        ROUND(COALESCE(a.demand_a, 0), 0)  AS demand_a,
+        ROUND(COALESCE(b.demand_b, 0), 0)  AS demand_b,
+        ROUND(COALESCE(b.demand_b, 0) - COALESCE(a.demand_a, 0), 0) AS demand_delta,
+        ROUND(COALESCE(a.spill_a, 0), 0)   AS spill_a,
+        ROUND(COALESCE(b.spill_b, 0), 0)   AS spill_b,
+        ROUND(COALESCE(b.spill_b, 0) - COALESCE(a.spill_a, 0), 0)  AS spill_delta,
+        ROUND(COALESCE(a.lf_a, 0) * 100, 1) AS lf_a_pct,
+        ROUND(COALESCE(b.lf_b, 0) * 100, 1) AS lf_b_pct,
+        CASE
+            WHEN a.origin IS NULL THEN 'new'
+            WHEN b.origin IS NULL THEN 'dropped'
+            WHEN COALESCE(b.spill_b,0) < COALESCE(a.spill_a,0) * 0.9 THEN 'improved'
+            WHEN COALESCE(b.spill_b,0) > COALESCE(a.spill_a,0) * 1.1 THEN 'deteriorated'
+            ELSE 'stable'
+        END AS status
+    FROM a FULL OUTER JOIN b ON a.origin = b.origin AND a.dest = b.dest
+    ORDER BY ABS(demand_delta) DESC NULLS LAST
+    LIMIT {top_n}
+    """
+    rows = conn.execute(sql).fetchdf()
+
+    # Summary metrics
+    total_demand_delta = int(rows["demand_delta"].sum())
+    total_spill_delta  = int(rows["spill_delta"].sum())
+    new_routes     = int((rows["status"] == "new").sum())
+    dropped_routes = int((rows["status"] == "dropped").sum())
+    improved       = int((rows["status"] == "improved").sum())
+    deteriorated   = int((rows["status"] == "deteriorated").sum())
+
+    route_rows = rows.to_dict(orient="records")
+    # Convert numpy types to python native for JSON serialisation
+    for r in route_rows:
+        for k, v in r.items():
+            if hasattr(v, "item"):
+                r[k] = v.item()
+
+    wd_a = _get_workset_dir()
+    return {
+        "workset_a": wd_a.name,
+        "workset_b": Path(_WORKSET_B_PATH).name if _WORKSET_B_PATH else "?",
+        "summary": {
+            "total_demand_delta": total_demand_delta,
+            "total_spill_delta":  total_spill_delta,
+            "new_routes":         new_routes,
+            "dropped_routes":     dropped_routes,
+            "improved_routes":    improved,
+            "deteriorated_routes":deteriorated,
+            "routes_compared":    len(rows),
+        },
+        "routes": route_rows,
+    }
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Query helpers
 # ─────────────────────────────────────────────────────────────────────────────
 

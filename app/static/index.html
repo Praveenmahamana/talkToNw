@@ -512,6 +512,82 @@
       padding: 0; margin-bottom: 20px; box-shadow: 0 1px 4px rgba(0,0,0,.05);
       overflow: hidden;
     }
+
+    /* ── Compare Worksets Panel ── */
+    .compare-panel {
+      background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
+      margin-bottom: 20px; box-shadow: 0 1px 4px rgba(0,0,0,.05); overflow: hidden;
+    }
+    .compare-panel-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 20px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; cursor: pointer;
+    }
+    .compare-panel-header h2 { font-size:.72rem; color:#718096; letter-spacing:.05em; text-transform:uppercase; }
+    .compare-toggle { background:none; border:none; color:#718096; font-size:1rem; cursor:pointer; padding:0; }
+    .compare-body { padding: 20px; display: none; }
+    .compare-body.open { display: block; }
+    .compare-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 14px; }
+    .compare-field { display: flex; flex-direction: column; gap: 4px; }
+    .compare-field label { font-size:0.72rem; color:#718096; }
+    .compare-field select, .compare-field input {
+      background:#f7fafc; border:1px solid #cbd5e0; border-radius:6px;
+      padding:7px 10px; font-size:0.82rem; color:#1a202c; outline:none; transition:border .2s;
+    }
+    .compare-field select:focus, .compare-field input:focus { border-color:#667eea; }
+    .compare-btn {
+      background:#667eea; color:#fff; border:none; border-radius:8px;
+      padding:8px 18px; font-size:0.82rem; font-weight:600; cursor:pointer; transition:background .2s;
+    }
+    .compare-btn:hover { background:#5a67d8; }
+    .compare-btn.secondary { background:#e2e8f0; color:#4a5568; }
+    .compare-btn.secondary:hover { background:#cbd5e0; }
+    .compare-btn.ai { background:#38a169; }
+    .compare-btn.ai:hover { background:#2f855a; }
+    /* Summary metrics bar */
+    .compare-summary {
+      display:flex; gap:12px; flex-wrap:wrap; padding:14px 0; border-bottom:1px solid #e2e8f0; margin-bottom:16px;
+    }
+    .compare-metric {
+      background:#f7fafc; border:1px solid #e2e8f0; border-radius:8px;
+      padding:10px 16px; text-align:center; min-width:110px;
+    }
+    .compare-metric .cm-val { font-size:1.3rem; font-weight:700; color:#1a202c; }
+    .compare-metric .cm-val.pos { color:#38a169; }
+    .compare-metric .cm-val.neg { color:#e53e3e; }
+    .compare-metric .cm-lbl { font-size:0.65rem; color:#a0aec0; text-transform:uppercase; letter-spacing:.04em; margin-top:2px; }
+    /* Delta table */
+    .compare-table-wrap { overflow-x:auto; margin-bottom:14px; }
+    .compare-table { width:100%; border-collapse:collapse; font-size:0.78rem; }
+    .compare-table th {
+      background:#f7fafc; color:#718096; font-weight:600; text-transform:uppercase;
+      font-size:0.65rem; letter-spacing:.04em; padding:8px 10px; text-align:right; border-bottom:2px solid #e2e8f0; white-space:nowrap;
+    }
+    .compare-table th:first-child, .compare-table th:nth-child(2) { text-align:left; }
+    .compare-table td { padding:7px 10px; border-bottom:1px solid #f0f4f8; text-align:right; vertical-align:middle; }
+    .compare-table td:first-child, .compare-table td:nth-child(2) { text-align:left; font-weight:600; color:#2d3748; }
+    .compare-table tr:hover td { background:#f7fafc; }
+    .delta-pos { color:#38a169; font-weight:600; }
+    .delta-neg { color:#e53e3e; font-weight:600; }
+    .delta-neu { color:#718096; }
+    .route-badge {
+      display:inline-block; padding:1px 7px; border-radius:8px; font-size:0.65rem; font-weight:600; text-transform:uppercase;
+    }
+    .badge-new          { background:#c6f6d5; color:#276749; }
+    .badge-dropped      { background:#fed7d7; color:#c53030; }
+    .badge-improved     { background:#bee3f8; color:#2b6cb0; }
+    .badge-deteriorated { background:#fef3c7; color:#b7791f; }
+    .badge-stable       { background:#e2e8f0; color:#718096; }
+    /* AI Summary card */
+    .compare-ai-card {
+      background:#f7fafc; border:1px solid #e2e8f0; border-radius:10px; padding:16px; margin-top:14px;
+    }
+    .compare-ai-headline { font-size:0.92rem; font-weight:700; color:#2d3748; margin-bottom:8px; }
+    .compare-ai-narrative { font-size:0.82rem; color:#4a5568; line-height:1.6; margin-bottom:10px; }
+    .compare-ai-bullets { list-style:none; padding:0; margin:0 0 10px; display:flex; flex-direction:column; gap:5px; }
+    .compare-ai-bullet { font-size:0.78rem; color:#2b6cb0; background:#ebf4ff; border:1px solid #bee3f8; border-radius:6px; padding:5px 10px; }
+    .compare-ai-bullet::before { content:"→ "; font-weight:700; }
+    .compare-ai-rec { font-size:0.78rem; color:#276749; background:#f0fff4; border:1px solid #c6f6d5; border-radius:6px; padding:7px 11px; font-weight:500; }
+
     .graph-panel-header {
       display: flex; align-items: center; justify-content: space-between;
       padding: 14px 20px; background: #f8fafc; border-bottom: 1px solid #e2e8f0;
@@ -703,6 +779,68 @@
     <button class="sim-btn" onclick="runSim()">Run Simulation</button>
     <div id="sim-result"></div>
   </div>
+  <!-- Compare Worksets Panel -->
+  <div class="compare-panel" id="compare-panel">
+    <div class="compare-panel-header" onclick="_toggleComparePanel()">
+      <h2>📊 Compare Worksets</h2>
+      <button class="compare-toggle" id="compare-toggle-btn" title="Toggle">▼</button>
+    </div>
+    <div class="compare-body" id="compare-body">
+      <!-- Controls -->
+      <div class="compare-row">
+        <div class="compare-field">
+          <label>Workset A (active)</label>
+          <input id="cmp-ws-a" style="width:200px;color:#38a169;font-weight:600" readonly />
+        </div>
+        <div class="compare-field">
+          <label>Workset B</label>
+          <select id="cmp-ws-b-select" style="width:200px" onchange="_onWsBSelect()">
+            <option value="">— select or enter path below —</option>
+          </select>
+        </div>
+        <div class="compare-field">
+          <label>Or full path</label>
+          <input id="cmp-ws-b-path" placeholder="C:\path\to\WORKSET_B" style="width:280px" />
+        </div>
+        <button class="compare-btn secondary" onclick="_loadWorksetB()">⬆ Load B</button>
+      </div>
+      <div class="compare-row">
+        <div class="compare-field"><label>Filter Origin</label><input id="cmp-origin" style="width:70px;text-transform:uppercase" maxlength="3" placeholder="DXB" /></div>
+        <div class="compare-field"><label>Filter Dest</label><input id="cmp-dest" style="width:70px;text-transform:uppercase" maxlength="3" placeholder="BOM" /></div>
+        <div class="compare-field"><label>Filter Airline</label><input id="cmp-airline" style="width:70px;text-transform:uppercase" maxlength="2" placeholder="EK" /></div>
+        <div class="compare-field"><label>Top N routes</label><input id="cmp-topn" type="number" value="50" min="5" max="200" style="width:70px" /></div>
+        <button class="compare-btn" onclick="_runComparison()" id="cmp-run-btn">▶ Compare</button>
+      </div>
+      <!-- Status -->
+      <div id="cmp-status" style="font-size:0.78rem;color:#718096;margin-bottom:10px;display:none"></div>
+      <!-- Summary metrics -->
+      <div id="cmp-summary" style="display:none">
+        <div class="compare-summary" id="cmp-metrics"></div>
+        <!-- Delta table -->
+        <div class="compare-table-wrap">
+          <table class="compare-table" id="cmp-table">
+            <thead>
+              <tr>
+                <th>Route</th>
+                <th>Status</th>
+                <th>Demand A</th><th>Demand B</th><th>Δ Demand</th>
+                <th>Spill A</th><th>Spill B</th><th>Δ Spill</th>
+                <th>LF A</th><th>LF B</th>
+                <th>Flights A→B</th>
+              </tr>
+            </thead>
+            <tbody id="cmp-tbody"></tbody>
+          </table>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;margin-top:10px">
+          <button class="compare-btn ai" onclick="_runWsAiSummary()">🤖 AI Summary</button>
+          <span id="cmp-ai-loader" style="display:none;font-size:0.78rem;color:#718096">Generating analysis…</span>
+        </div>
+        <div id="cmp-ai-card" style="display:none" class="compare-ai-card"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- Network Graph Visualization (Cytoscape.js) -->
   <div class="graph-panel">
     <div class="graph-panel-header">
@@ -1717,6 +1855,181 @@ function _autoLoadGraph(params) {
 function _dismissGraphBadge() {
   const b = document.getElementById('graph-auto-badge');
   if (b) b.classList.remove('visible');
+}
+
+// ── Compare Worksets ─────────────────────────────────────────────────────────
+
+let _compareLoaded = false; // true once workset B is loaded
+
+function _toggleComparePanel() {
+  const body = document.getElementById('compare-body');
+  const btn  = document.getElementById('compare-toggle-btn');
+  const open = body.classList.toggle('open');
+  btn.textContent = open ? '▲' : '▼';
+  if (open && !_compareLoaded) _initComparePanel();
+}
+
+async function _initComparePanel() {
+  // Load workset list into dropdown
+  const sel = document.getElementById('cmp-ws-b-select');
+  try {
+    const r = await fetch(`${BASE}/api/v1/workset/list`).then(r => r.json());
+    const wsA = r.worksets.find(w => w.current);
+    if (wsA) document.getElementById('cmp-ws-a').value = wsA.name;
+    sel.innerHTML = '<option value="">— select workset —</option>';
+    r.worksets.forEach(w => {
+      if (!w.current) {
+        const o = document.createElement('option');
+        o.value = w.path; o.textContent = w.name;
+        sel.appendChild(o);
+      }
+    });
+    // If only 1 workset found, show a hint
+    if (r.worksets.length <= 1) {
+      sel.innerHTML = '<option value="">No additional worksets found</option>';
+    }
+  } catch(e) {
+    sel.innerHTML = '<option value="">Could not load list</option>';
+  }
+}
+
+function _onWsBSelect() {
+  const sel  = document.getElementById('cmp-ws-b-select');
+  const path = document.getElementById('cmp-ws-b-path');
+  if (sel.value) path.value = sel.value;
+}
+
+async function _loadWorksetB() {
+  const path = (document.getElementById('cmp-ws-b-path').value ||
+                document.getElementById('cmp-ws-b-select').value).trim();
+  if (!path) { alert('Enter a workset B path or select from the dropdown.'); return; }
+
+  const status = document.getElementById('cmp-status');
+  status.style.display = 'block';
+  status.textContent = '⏳ Loading Workset B — this may take 30–60 s…';
+
+  try {
+    const r = await fetch(`${BASE}/api/v1/workset/load-b`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ path })
+    }).then(r => r.json());
+
+    if (!r.loaded) {
+      status.textContent = `⚠ Partial load: ${r.errors.join('; ')}`;
+    } else {
+      status.textContent = `✅ Workset B loaded: ${r.name}  (base: ${(r.counts.base||0).toLocaleString()} rows${r.counts.spill ? ', spill: '+(r.counts.spill||0).toLocaleString()+' rows' : ''})`;
+      _compareLoaded = true;
+    }
+  } catch(e) {
+    status.textContent = `❌ Error: ${e.message}`;
+  }
+}
+
+async function _runComparison() {
+  const origin  = document.getElementById('cmp-origin').value.trim().toUpperCase();
+  const dest    = document.getElementById('cmp-dest').value.trim().toUpperCase();
+  const airline = document.getElementById('cmp-airline').value.trim().toUpperCase();
+  const topN    = document.getElementById('cmp-topn').value || 50;
+  const status  = document.getElementById('cmp-status');
+  const summary = document.getElementById('cmp-summary');
+
+  status.style.display = 'block';
+  status.textContent = '⏳ Running comparison…';
+  summary.style.display = 'none';
+  document.getElementById('cmp-ai-card').style.display = 'none';
+
+  const params = new URLSearchParams({ top_n: topN });
+  if (origin)  params.append('origin',  origin);
+  if (dest)    params.append('dest',    dest);
+  if (airline) params.append('airline', airline);
+
+  try {
+    const r = await fetch(`${BASE}/api/v1/workset/compare?${params}`).then(res => {
+      if (!res.ok) return res.json().then(e => { throw new Error(e.detail); });
+      return res.json();
+    });
+
+    status.textContent = `✅ Compared ${r.summary.routes_compared} routes · ${r.workset_a} vs ${r.workset_b}`;
+    _renderComparisonResults(r);
+    // Store for AI summary
+    window._lastCompareResult = r;
+  } catch(e) {
+    status.textContent = `❌ ${e.message}`;
+  }
+}
+
+function _renderComparisonResults(r) {
+  const s = r.summary;
+  const summary = document.getElementById('cmp-summary');
+  const metrics = document.getElementById('cmp-metrics');
+  const tbody   = document.getElementById('cmp-tbody');
+
+  const fmt = n => typeof n === 'number' ? (n >= 0 ? '+' : '') + n.toLocaleString() : n;
+  const fmtN = n => typeof n === 'number' ? Math.round(n).toLocaleString() : '—';
+
+  // Summary metrics
+  metrics.innerHTML = [
+    { val: fmt(s.total_demand_delta), lbl: 'Total Demand Δ', pos: s.total_demand_delta >= 0 },
+    { val: fmt(s.total_spill_delta),  lbl: 'Total Spill Δ',  pos: s.total_spill_delta <= 0 },
+    { val: s.new_routes,              lbl: 'New Routes',      pos: true },
+    { val: s.dropped_routes,          lbl: 'Dropped Routes',  pos: false },
+    { val: s.improved_routes,         lbl: 'Improved',        pos: true },
+    { val: s.deteriorated_routes,     lbl: 'Deteriorated',    pos: false },
+  ].map(m => `
+    <div class="compare-metric">
+      <div class="cm-val ${m.pos ? 'pos' : 'neg'}">${m.val}</div>
+      <div class="cm-lbl">${m.lbl}</div>
+    </div>`).join('');
+
+  // Route rows
+  const badgeClass = { new:'badge-new', dropped:'badge-dropped', improved:'badge-improved', deteriorated:'badge-deteriorated', stable:'badge-stable' };
+  tbody.innerHTML = r.routes.map(row => {
+    const dDelta = row.demand_delta || 0;
+    const sDelta = row.spill_delta  || 0;
+    const dClass = dDelta > 0 ? 'delta-pos' : dDelta < 0 ? 'delta-neg' : 'delta-neu';
+    const sClass = sDelta < 0 ? 'delta-pos' : sDelta > 0 ? 'delta-neg' : 'delta-neu'; // lower spill = good
+    return `<tr>
+      <td>${escHtml(row.origin||'')}→${escHtml(row.dest||'')}</td>
+      <td><span class="route-badge ${badgeClass[row.status]||'badge-stable'}">${escHtml(row.status)}</span></td>
+      <td>${fmtN(row.demand_a)}</td><td>${fmtN(row.demand_b)}</td>
+      <td class="${dClass}">${fmt(dDelta)}</td>
+      <td>${fmtN(row.spill_a)}</td><td>${fmtN(row.spill_b)}</td>
+      <td class="${sClass}">${fmt(sDelta)}</td>
+      <td>${row.lf_a_pct??'—'}%</td><td>${row.lf_b_pct??'—'}%</td>
+      <td>${row.flights_a??0}→${row.flights_b??0}</td>
+    </tr>`;
+  }).join('');
+
+  summary.style.display = 'block';
+}
+
+async function _runWsAiSummary() {
+  const r = window._lastCompareResult;
+  if (!r) return;
+  const loader = document.getElementById('cmp-ai-loader');
+  const card   = document.getElementById('cmp-ai-card');
+  loader.style.display = 'inline'; card.style.display = 'none';
+
+  try {
+    const ai = await fetch(`${BASE}/api/v1/workset/ai-summary`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ summary: r.summary, routes: r.routes.slice(0, 15), workset_a: r.workset_a, workset_b: r.workset_b })
+    }).then(r => r.json());
+
+    loader.style.display = 'none';
+    const bullets = (ai.bullets||[]).map(b => `<li class="compare-ai-bullet">${escHtml(b)}</li>`).join('');
+    card.style.display = 'block';
+    card.innerHTML = `
+      ${ai.headline ? `<div class="compare-ai-headline">${escHtml(ai.headline)}</div>` : ''}
+      <div class="compare-ai-narrative">${escHtml(ai.narrative||'')}</div>
+      ${bullets ? `<ul class="compare-ai-bullets">${bullets}</ul>` : ''}
+      ${ai.recommendation ? `<div class="compare-ai-rec">💡 ${escHtml(ai.recommendation)}</div>` : ''}
+    `;
+  } catch(e) {
+    loader.style.display = 'none';
+    card.style.display = 'block';
+    card.innerHTML = `<p style="color:#fc8181">AI summary failed: ${escHtml(e.message)}</p>`;
+  }
 }
 
 // ── Simulation ──────────────────────────────────────────────────────────────
