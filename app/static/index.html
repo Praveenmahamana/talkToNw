@@ -197,6 +197,66 @@
     .lf-kg-legend-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
     .lf-kg-legend-diamond { width: 9px; height: 9px; transform: rotate(45deg); flex-shrink: 0; }
 
+    /* ── Thread history ── */
+    .query-card { position: relative; }
+    .thread-hist-btn {
+      font-size: 0.72rem; color: #718096; background: transparent;
+      border: 1px solid #cbd5e0; border-radius: 8px; padding: 4px 11px;
+      cursor: pointer; transition: border-color .2s, color .2s; white-space: nowrap;
+    }
+    .thread-hist-btn:hover { border-color: #667eea; color: #667eea; }
+    .thread-hist-panel {
+      position: absolute; top: 52px; right: 20px; z-index: 200;
+      background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
+      box-shadow: 0 8px 28px rgba(0,0,0,.14); width: 300px;
+      max-height: 320px; overflow-y: auto; display: none;
+    }
+    .thread-hist-panel.open { display: block; }
+    .thread-hist-empty { padding: 18px; text-align: center; color: #a0aec0; font-size: 0.8rem; }
+    .thread-hist-item {
+      display: flex; align-items: flex-start; gap: 8px;
+      padding: 10px 14px; border-bottom: 1px solid #f1f5f9;
+      cursor: pointer; transition: background .15s;
+    }
+    .thread-hist-item:last-child { border-bottom: none; }
+    .thread-hist-item:hover { background: #f8fafc; }
+    .thread-hist-item.active { background: #edf2ff; }
+    .thread-hist-info { flex: 1; min-width: 0; }
+    .thread-hist-name { font-size: 0.8rem; color: #2d3748; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .thread-hist-meta { font-size: 0.67rem; color: #a0aec0; margin-top: 2px; }
+    .thread-hist-del {
+      font-size: 0.7rem; color: #cbd5e0; cursor: pointer;
+      padding: 2px 5px; border-radius: 4px; flex-shrink: 0; line-height: 1;
+      background: none; border: none;
+    }
+    .thread-hist-del:hover { background: #fed7d7; color: #c53030; }
+    /* ── Flow KG node panel ── */
+    .flow-node-panel {
+      position: absolute; top: 10px; right: 10px; width: 260px;
+      background: #16132b; border: 1px solid rgba(255,255,255,.14);
+      border-radius: 10px; box-shadow: 0 12px 40px rgba(0,0,0,.65);
+      z-index: 50; overflow: hidden; display: flex; flex-direction: column;
+      animation: fnpFadeIn .18s ease;
+    }
+    @keyframes fnpFadeIn { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:none; } }
+    .flow-node-panel-hdr {
+      display: flex; align-items: center; gap: 6px; padding: 9px 11px; flex-shrink: 0;
+    }
+    .flow-node-panel-code { font-weight: 700; font-size: 1.05rem; }
+    .flow-node-panel-type { font-size: 0.67rem; color: #94a3b8; flex: 1; }
+    .flow-node-panel-close {
+      background: none; border: none; color: #64748b; font-size: 0.75rem;
+      cursor: pointer; padding: 2px 5px; border-radius: 4px;
+    }
+    .flow-node-panel-close:hover { background: rgba(255,255,255,.1); color: #fff; }
+    .flow-node-panel-body { padding: 10px 12px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 7px; }
+    .fnp-detail { font-size: 0.77rem; color: #94a3b8; line-height: 1.55; }
+    .fnp-freq, .fnp-conn { font-size: 0.73rem; color: #64748b; }
+    .fnp-ai-section { border-top: 1px solid rgba(255,255,255,.07); padding-top: 8px; margin-top: 2px; }
+    .fnp-ai-label { font-size: 0.66rem; color: #818cf8; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }
+    .fnp-ai-body { font-size: 0.77rem; color: #cbd5e1; line-height: 1.65; max-height: 160px; overflow-y: auto; }
+    .fnp-loading { color: #64748b; font-style: italic; }
+
     /* ── Viz card ── */
     .viz-card {
       background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden;
@@ -700,9 +760,11 @@
       <h2>💬 Talk to Network</h2>
       <div class="chat-header-right">
         <span class="session-badge" id="session-badge" title="Session ID">New session</span>
+        <button class="thread-hist-btn" id="thread-hist-btn" onclick="_toggleThreadHist(event)">🕐 History</button>
         <button class="new-thread-btn" onclick="newThread()">+ New Thread</button>
       </div>
     </div>
+    <div id="thread-hist-panel" class="thread-hist-panel"></div>
     <!-- Persona selector -->
     <div class="persona-bar" id="persona-bar"></div>
     <div id="chat-thread" class="empty"></div>
@@ -934,7 +996,133 @@ async function loadStatus() {
 // ── Chat state ──────────────────────────────────────────────────────────────
 let currentSessionId = null;
 
+// ── Thread persistence ──────────────────────────────────────────────────────
+const _THREAD_KEY = 'skd_threads_v2';
+let _currentThread = null;
+let _restoringThread = false;
+
+const _threadStore = {
+  list() {
+    try { return JSON.parse(localStorage.getItem(_THREAD_KEY) || '[]'); } catch { return []; }
+  },
+  save(t) {
+    const all = this.list().filter(x => x.id !== t.id);
+    all.unshift(t);
+    if (all.length > 60) all.length = 60;
+    try { localStorage.setItem(_THREAD_KEY, JSON.stringify(all)); } catch {}
+  },
+  get(id) { return this.list().find(t => t.id === id) || null; },
+  del(id) {
+    const all = this.list().filter(t => t.id !== id);
+    try { localStorage.setItem(_THREAD_KEY, JSON.stringify(all)); } catch {}
+  },
+};
+
+function _mkThreadId() {
+  return 'th_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+}
+function _initCurrentThread() {
+  _currentThread = { id: _mkThreadId(), name: 'New Thread', messages: [], sessionId: null,
+                     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+}
+function _autoNameThread(msg) {
+  const s = msg.trim().replace(/\s+/g, ' ');
+  return s.length > 48 ? s.slice(0, 45) + '…' : s;
+}
+function _saveCurrentThread() {
+  if (!_currentThread || !_currentThread.messages.length) return;
+  _currentThread.updatedAt = new Date().toISOString();
+  if (currentSessionId) _currentThread.sessionId = currentSessionId;
+  _threadStore.save(_currentThread);
+  _updateHistBtn();
+}
+function _recordMsg(role, text, meta) {
+  if (_restoringThread) return;
+  if (!_currentThread) _initCurrentThread();
+  _currentThread.messages.push({ role, text, meta: meta || null });
+  if (role === 'user' && _currentThread.name === 'New Thread') {
+    _currentThread.name = _autoNameThread(text);
+  }
+}
+function _updateHistBtn() {
+  const btn = document.getElementById('thread-hist-btn');
+  if (!btn) return;
+  const n = _threadStore.list().length;
+  btn.textContent = n ? `🕐 ${n}` : '🕐 History';
+}
+function _relTime(iso) {
+  const m = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  if (m < 1) return 'Just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+function _toggleThreadHist(ev) {
+  ev && ev.stopPropagation();
+  const panel = document.getElementById('thread-hist-panel');
+  if (!panel) return;
+  const open = panel.classList.toggle('open');
+  if (open) {
+    _renderThreadHist();
+    const close = e => {
+      if (!panel.contains(e.target) && e.target.id !== 'thread-hist-btn') {
+        panel.classList.remove('open');
+        document.removeEventListener('click', close);
+      }
+    };
+    setTimeout(() => document.addEventListener('click', close), 50);
+  }
+}
+function _renderThreadHist() {
+  const panel = document.getElementById('thread-hist-panel');
+  if (!panel) return;
+  const threads = _threadStore.list();
+  if (!threads.length) {
+    panel.innerHTML = '<div class="thread-hist-empty">No saved threads yet.<br>Start chatting to save one!</div>';
+    return;
+  }
+  panel.innerHTML = threads.map(t => {
+    const isCur = _currentThread && t.id === _currentThread.id;
+    return `<div class="thread-hist-item${isCur ? ' active' : ''}" onclick="_loadThread('${t.id}')">
+      <div class="thread-hist-info">
+        <div class="thread-hist-name" title="${escHtml(t.name)}">${escHtml(t.name)}</div>
+        <div class="thread-hist-meta">${_relTime(t.updatedAt)} · ${t.messages.length} msg${t.messages.length !== 1 ? 's' : ''}</div>
+      </div>
+      <button class="thread-hist-del" onclick="event.stopPropagation();_delThread('${t.id}')" title="Delete">✕</button>
+    </div>`;
+  }).join('');
+}
+function _loadThread(id) {
+  const t = _threadStore.get(id);
+  if (!t) return;
+  _saveCurrentThread();
+  _currentThread = t;
+  currentSessionId = t.sessionId || null;
+  const short = currentSessionId ? currentSessionId.substring(0, 8) + '…' : 'restored';
+  document.getElementById('session-badge').textContent = `Session · ${short}`;
+  const threadDiv = document.getElementById('chat-thread');
+  threadDiv.innerHTML = '';
+  threadDiv.classList.remove('empty');
+  _restoringThread = true;
+  t.messages.forEach(msg => appendBubble(msg.role, msg.text, msg.meta));
+  _restoringThread = false;
+  document.getElementById('thread-hist-panel').classList.remove('open');
+  clearAnalysis();
+}
+function _delThread(id) {
+  _threadStore.del(id);
+  _renderThreadHist();
+  _updateHistBtn();
+}
+
+// Init thread on load
+_initCurrentThread();
+_updateHistBtn();
+
 function newThread() {
+  _saveCurrentThread();
+  _initCurrentThread();
   currentSessionId = null;
   const thread = document.getElementById('chat-thread');
   thread.innerHTML = '';
@@ -1240,6 +1428,7 @@ async function askQuery() {
   btn.disabled = true; btn.textContent = '…';
   const now = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
   appendBubble('user', q, {ts: now});
+  _recordMsg('user', q, {ts: now});
   document.getElementById('q-input').value = '';
   showTyping();
   try {
@@ -1256,12 +1445,15 @@ async function askQuery() {
     const short = currentSessionId ? currentSessionId.substring(0, 8) + '…' : '';
     document.getElementById('session-badge').textContent = `Session · ${short} · turn ${r.turn}`;
 
-    appendBubble('assistant', r.answer || 'No answer.', {
+    const asMeta = {
       ts: new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}),
       tools: r.tools_used || [],
       confidence: r.confidence,
       time: r.response_time,
-    });
+    };
+    appendBubble('assistant', r.answer || 'No answer.', asMeta);
+    _recordMsg('assistant', r.answer || 'No answer.', asMeta);
+    _saveCurrentThread();
 
     // Store Q&A context for LM suggestion generation
     _lastQuery  = q;
@@ -1578,8 +1770,14 @@ function _initFlowKG(containerId, connecting, centerLabel, viz) {
 
     canvas.addEventListener('mousedown', ev => {
       const hit = _hitNode(ev.offsetX, ev.offsetY);
-      if (hit) { canvas.title = hit.detail || hit.label; }
-      else { panning = true; panStart = { x: ev.offsetX, y: ev.offsetY, tx: tf.x, ty: tf.y }; }
+      if (hit) {
+        _showFlowNodePanel(hit);
+      } else {
+        const ep = wrap.querySelector('.flow-node-panel');
+        if (ep) { ep.remove(); return; }
+        panning = true;
+        panStart = { x: ev.offsetX, y: ev.offsetY, tx: tf.x, ty: tf.y };
+      }
     });
     canvas.addEventListener('mousemove', ev => {
       if (panning && panStart) {
@@ -1773,6 +1971,67 @@ function _initFlowKG(containerId, connecting, centerLabel, viz) {
         sim.stop();
       }
     }).observe(document.body, { childList: true, subtree: true });
+
+    // ── Node click panel ─────────────────────────────────────────────────────
+    function _showFlowNodePanel(node) {
+      const existing = wrap.querySelector('.flow-node-panel');
+      if (existing) existing.remove();
+
+      const typeLabels = { origin:'🛫 Origin', dest:'🛬 Destination', hub_f:'🔀 Feeder Hub', hub_o:'🔀 Onward Hub', airline:'✈️ Airline' };
+      const relEdges = edges.filter(e => {
+        const s = typeof e.source === 'object' ? e.source.id : e.source;
+        const t = typeof e.target === 'object' ? e.target.id : e.target;
+        return s === node.id || t === node.id;
+      });
+      const freqs = relEdges.filter(e => e.freq).map(e => e.freq + '×/wk');
+      const linked = [...new Set(relEdges.map(e => {
+        const s = typeof e.source === 'object' ? e.source.id : e.source;
+        const t = typeof e.target === 'object' ? e.target.id : e.target;
+        const oid = s === node.id ? t : s;
+        const o = nodeMap.get(oid); return o ? o.label : null;
+      }).filter(Boolean))];
+
+      const pid = 'fna_' + node.id.replace(/[^a-zA-Z0-9]/g, '_');
+      const panel = document.createElement('div');
+      panel.className = 'flow-node-panel';
+      panel.innerHTML = `
+        <div class="flow-node-panel-hdr" style="border-bottom:1.5px solid ${node.color}55">
+          <span class="flow-node-panel-code" style="color:${node.color}">${escHtml(node.label)}</span>
+          <span class="flow-node-panel-type">${typeLabels[node.type] || ''}</span>
+          <button class="flow-node-panel-close" onclick="this.closest('.flow-node-panel').remove()">✕</button>
+        </div>
+        <div class="flow-node-panel-body">
+          ${node.detail ? `<div class="fnp-detail">${escHtml(node.detail)}</div>` : ''}
+          ${freqs.length  ? `<div class="fnp-freq">🔄 ${freqs.join(' · ')}</div>` : ''}
+          ${linked.length ? `<div class="fnp-conn">🔗 ${escHtml(linked.join(' · '))}</div>` : ''}
+          <div class="fnp-ai-section">
+            <div class="fnp-ai-label">🤖 AI Insight</div>
+            <div class="fnp-ai-body" id="${pid}"><span class="fnp-loading">Analyzing…</span></div>
+          </div>
+        </div>`;
+      wrap.style.position = 'relative';
+      wrap.appendChild(panel);
+
+      const qs = {
+        origin:  `What are the key traffic characteristics of ${originCode} as an origin for routes to ${destCode}? Be concise (2-3 sentences).`,
+        dest:    `What are the key traffic characteristics of ${destCode} as a destination from ${originCode}? Be concise (2-3 sentences).`,
+        hub_f:   `How does ${node.label} feed traffic into ${originCode} for the ${originCode}-${destCode} itinerary? Which airlines operate and at what frequency? Be concise.`,
+        hub_o:   `What onward connections does ${node.label} provide from ${destCode} in the ${originCode}-${destCode} market? Be concise.`,
+        airline: `Summarize ${node.label}'s role in ${originCode}-${destCode} itineraries — key hubs, frequencies, and competitive position. Be concise (2-3 sentences).`,
+      };
+      const q = qs[node.type] || `Tell me about ${node.label} in the context of the ${originCode}-${destCode} route. Be concise.`;
+
+      fetch(`${BASE}/api/v1/query`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: q, session_id: currentSessionId || undefined }),
+      }).then(r => r.json()).then(data => {
+        const el = document.getElementById(pid);
+        if (el) el.textContent = data.answer || 'No insight available.';
+      }).catch(() => {
+        const el = document.getElementById(pid);
+        if (el) el.textContent = 'Could not load insight.';
+      });
+    }
 
   } catch (err) {
     console.error('[FlowKG] render error:', err);
