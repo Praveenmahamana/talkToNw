@@ -1388,12 +1388,13 @@ function renderKpiRow(viz) {
 }
 
 // ── Mini Knowledge Graph: Top Connecting Routes (Flow Contributors) ──────────
-function _initFlowKG(containerId, connecting, centerLabel) {
+// Encodes itinerary types: non-stop, one_stop (online), interline, codeshare
+function _initFlowKG(containerId, connecting, centerLabel, viz) {
   const wrap = document.getElementById(containerId);
   if (!wrap || !connecting.length) return;
 
-  const W   = Math.max(wrap.offsetWidth || 360, 300);
-  const H   = 220;
+  const W   = Math.max(wrap.offsetWidth || 380, 300);
+  const H   = 240;
   const dpr = window.devicePixelRatio || 1;
 
   const canvas = document.createElement('canvas');
@@ -1403,92 +1404,191 @@ function _initFlowKG(containerId, connecting, centerLabel) {
   wrap.appendChild(canvas);
   const ctx = canvas.getContext('2d');
 
+  // ── Itinerary type helpers ─────────────────────────────────────────────────
+  const ITIN_STYLE = {
+    non_stop:  { edgeRgb: '16,185,129',  base: '#10b981', label: 'Non-stop',         dash: [] },
+    one_stop:  { edgeRgb: '32,101,209',  base: '#2065d1', label: 'Online 1-stop',    dash: [] },
+    two_stop:  { edgeRgb: '6,182,212',   base: '#06b6d4', label: 'Multi-stop',       dash: [4,3] },
+    interline: { edgeRgb: '245,158,11',  base: '#f59e0b', label: 'Interline',        dash: [5,3] },
+    codeshare: { edgeRgb: '168,85,247',  base: '#a855f7', label: 'Codeshare',        dash: [3,3] },
+  };
+
+  function classifyItinerary(cr) {
+    const t = (cr.type || cr.itinerary_type || cr.connection_type || '').toLowerCase().replace(/[\s_-]/g,'');
+    if (t.includes('nonstop') || t.includes('direct') || cr.stops === 0) return 'non_stop';
+    if (t.includes('interline')) return 'interline';
+    if (t.includes('codeshare')) return 'codeshare';
+    if (t.includes('multistop') || t.includes('twostop') || cr.stops >= 2) return 'two_stop';
+    // Infer: no via = non-stop, has airline_2 = interline
+    if (!cr.via && !cr.connect_point && !cr.hub) return 'non_stop';
+    if (cr.airline_2 && cr.airline_2 !== cr.airline) return 'interline';
+    return 'one_stop';
+  }
+
   // ── Build nodes + edges ────────────────────────────────────────────────────
   const nodeMap = new Map();
   const edges   = [];
 
-  // Central market node
-  const centerId = '__market__';
-  const shortCenter = (centerLabel || 'Flow').replace(/Top Connecting.*$/i,'').trim().slice(0, 20);
-  nodeMap.set(centerId, { id: centerId, type: 'market', label: shortCenter,
-    weight: 0, x: W/2, y: H/2, opacity: 0, fx: W/2, fy: H/2 }); // pinned
+  // Try to parse O&D from label "DXB→BOM" or "DXB-BOM"
+  const odMatch = (centerLabel || '').match(/([A-Z]{3})\s*[-→\/]\s*([A-Z]{3})/i);
+  const originCode = (viz && viz.origin) ? viz.origin.toUpperCase() : odMatch ? odMatch[1].toUpperCase() : null;
+  const destCode   = (viz && viz.destination) ? viz.destination.toUpperCase() : odMatch ? odMatch[2].toUpperCase() : null;
 
-  const hubFreq  = new Map();
-  const alFreq   = new Map();
+  const centerId = destCode || '__market__';
+  const centerLbl = destCode || (centerLabel || 'Market').replace(/Top Connecting.*$/i,'').trim().slice(0,18);
 
-  connecting.slice(0, 10).forEach(cr => {
-    const hub  = (cr.via || cr.connect_point || cr.hub || '').trim();
-    const al   = (cr.airline || cr.carrier || '').trim();
-    const freq = +(cr.frequency || cr.weekly_freq || 1);
-    const pax  = +(cr.pax || cr.flow_pax || 0);
-    if (!hub) return;
-
-    hubFreq.set(hub, (hubFreq.get(hub) || 0) + freq);
-    if (al) alFreq.set(al, (alFreq.get(al) || 0) + freq);
-
-    if (!nodeMap.has(hub)) {
-      nodeMap.set(hub, { id: hub, type: 'hub', label: hub, weight: freq,
-        x: W/2 + (Math.random()-0.5)*120, y: H/2 + (Math.random()-0.5)*90, opacity: 0 });
-    } else { nodeMap.get(hub).weight = hubFreq.get(hub); }
-
-    if (al && !nodeMap.has(al)) {
-      nodeMap.set(al, { id: al, type: 'airline', label: al, weight: freq,
-        x: W/2 + (Math.random()-0.5)*160, y: H/2 + (Math.random()-0.5)*110, opacity: 0 });
-    } else if (al) { nodeMap.get(al).weight = alFreq.get(al); }
-
-    // Airline → Hub edge (deduplicated)
-    if (al) {
-      const ek = al + '→' + hub;
-      const ex = edges.find(e => e._key === ek);
-      if (ex) ex.weight += freq; else edges.push({ _key: ek, source: al, target: hub, weight: freq, opacity: 0 });
-    }
-    // Hub → Market edge
-    const hk = hub + '→' + centerId;
-    const hx = edges.find(e => e._key === hk);
-    if (hx) hx.weight = hubFreq.get(hub); else edges.push({ _key: hk, source: hub, target: centerId, weight: freq, opacity: 0 });
+  nodeMap.set(centerId, {
+    id: centerId, type: destCode ? 'airport' : 'market', label: centerLbl,
+    weight: 10, x: W * 0.82, y: H/2, opacity: 0,
+    fx: W * 0.82, fy: H/2   // pin destination/market on right
   });
 
-  const nodes = Array.from(nodeMap.values());
-  const maxFreq = Math.max(...edges.map(e => e.weight), 1);
+  if (originCode && originCode !== centerId) {
+    nodeMap.set(originCode, {
+      id: originCode, type: 'origin', label: originCode,
+      weight: 10, x: W * 0.15, y: H/2, opacity: 0,
+      fx: W * 0.15, fy: H/2  // pin origin on left
+    });
+  }
 
-  const TYPE_COLOR = { market: '#2065d1', hub: '#f59e0b', airline: '#8b5cf6' };
-  const nodeR = n => n.type === 'market' ? 13 : n.type === 'airline' ? 7
-    : Math.max(7, Math.min(16, 5 + Math.sqrt(n.weight) * 1.6));
+  const hubFreq = new Map(), alFreq = new Map();
 
-  // ── D3 force ──────────────────────────────────────────────────────────────
+  connecting.slice(0, 10).forEach(cr => {
+    const hub     = (cr.via || cr.connect_point || cr.hub || '').trim();
+    const al      = (cr.airline || cr.carrier || '').trim();
+    const al2     = (cr.airline_2 || '').trim();
+    const freq    = +(cr.frequency || cr.weekly_freq || 1);
+    const itin    = classifyItinerary(cr);
+    const style   = ITIN_STYLE[itin];
+    const sourceId = originCode || '__origin__';
+
+    // Ensure we have an implicit origin if none parsed
+    if (!nodeMap.has(sourceId)) {
+      nodeMap.set(sourceId, {
+        id: sourceId, type: 'origin', label: originCode || 'O',
+        weight: 5, x: W * 0.12, y: H/2, opacity: 0,
+        fx: W * 0.12, fy: H/2
+      });
+    }
+
+    if (itin === 'non_stop') {
+      // Direct airline label node + direct edge to market/dest
+      if (al && !nodeMap.has(al)) {
+        nodeMap.set(al, { id: al, type: 'airline', label: al, itin, weight: freq,
+          x: W/2 + (Math.random()-0.5)*60, y: H/2 + (Math.random()-0.5)*80, opacity: 0 });
+      } else if (al) { nodeMap.get(al).weight += freq; }
+      if (al) {
+        const ek = al + '→' + centerId + ':ns';
+        if (!edges.find(e => e._key === ek))
+          edges.push({ _key: ek, source: al, target: centerId, weight: freq, itin, style, opacity: 0 });
+      }
+      // Origin → Airline (for non-stop, show the route leg)
+      const ok = sourceId + '→' + (al || centerId) + ':ns';
+      if (!edges.find(e => e._key === ok))
+        edges.push({ _key: ok, source: sourceId, target: al || centerId, weight: freq, itin, style, opacity: 0 });
+
+    } else {
+      // Connecting / interline — needs hub node
+      if (!hub) return;
+      hubFreq.set(hub, (hubFreq.get(hub) || 0) + freq);
+      if (al) alFreq.set(al, (alFreq.get(al) || 0) + freq);
+
+      if (!nodeMap.has(hub)) {
+        nodeMap.set(hub, { id: hub, type: 'hub', label: hub, itin, weight: freq,
+          x: W/2 + (Math.random()-0.5)*120, y: H/2 + (Math.random()-0.5)*80, opacity: 0 });
+      } else { nodeMap.get(hub).weight = hubFreq.get(hub); }
+
+      if (al && !nodeMap.has(al)) {
+        nodeMap.set(al, { id: al, type: 'airline', label: al, itin, weight: freq,
+          x: W/2 + (Math.random()-0.5)*150, y: H/2 + (Math.random()-0.5)*100, opacity: 0 });
+      } else if (al) { nodeMap.get(al).weight = alFreq.get(al); }
+
+      // Airline → Hub leg 1
+      if (al) {
+        const ek = al + '→' + hub + ':' + itin;
+        const ex = edges.find(e => e._key === ek);
+        if (ex) ex.weight += freq;
+        else edges.push({ _key: ek, source: al, target: hub, weight: freq, itin, style, opacity: 0 });
+      }
+
+      // Hub → Dest (leg 2 — if interline, use al2 color; else same style)
+      const hubStyle = (itin === 'interline' && al2) ? ITIN_STYLE.interline : style;
+      if (al2 && al2 !== al && !nodeMap.has(al2)) {
+        nodeMap.set(al2, { id: al2, type: 'airline', label: al2, itin: 'interline', weight: freq,
+          x: W/2 + (Math.random()-0.5)*150, y: H/2 + (Math.random()-0.5)*100, opacity: 0 });
+      }
+      const hk = hub + '→' + centerId + ':' + itin;
+      const hx = edges.find(e => e._key === hk);
+      if (hx) hx.weight = hubFreq.get(hub);
+      else edges.push({ _key: hk, source: hub, target: centerId, weight: freq, itin, style: hubStyle, opacity: 0 });
+
+      // Origin → Hub leg 0
+      const ok = sourceId + '→' + hub + ':' + itin;
+      if (!edges.find(e => e._key === ok))
+        edges.push({ _key: ok, source: sourceId, target: hub, weight: freq, itin, style, opacity: 0 });
+    }
+  });
+
+  const nodes    = Array.from(nodeMap.values());
+  const maxFreq  = Math.max(...edges.map(e => e.weight), 1);
+
+  const TYPE_COLOR = {
+    origin:  '#10b981',
+    airport: '#2065d1',
+    market:  '#2065d1',
+    hub:     '#f59e0b',
+    airline: '#8b5cf6',
+  };
+  const nodeR = n => {
+    if (n.type === 'origin' || n.type === 'airport' || n.type === 'market') return 12;
+    if (n.type === 'airline') return 7;
+    return Math.max(7, Math.min(15, 5 + Math.sqrt(n.weight) * 1.5));
+  };
+
+  // ── D3 force simulation ────────────────────────────────────────────────────
   const sim = d3Force.forceSimulation(nodes)
-    .force('link',      d3Force.forceLink(edges).id(n => n.id).distance(n => n.target.id === centerId ? 70 : 55).strength(0.7))
-    .force('charge',    d3Force.forceManyBody().strength(-160))
-    .force('center',    d3Force.forceCenter(W/2, H/2).strength(0.05))
-    .force('collision', d3Force.forceCollide().radius(n => nodeR(n) + 12))
-    .alphaDecay(0.018)
+    .force('link',      d3Force.forceLink(edges).id(n => n.id).distance(e => {
+      const tid = typeof e.target === 'object' ? e.target.id : e.target;
+      return (tid === centerId || tid === (originCode || '__origin__')) ? 75 : 55;
+    }).strength(0.65))
+    .force('charge',    d3Force.forceManyBody().strength(-180))
+    .force('center',    d3Force.forceCenter(W/2, H/2).strength(0.04))
+    .force('collision', d3Force.forceCollide().radius(n => nodeR(n) + 14))
+    .alphaDecay(0.016)
     .on('tick', draw);
 
-  // Fade-in loop
+  // Fade-in + animation loop
   let raf = null;
   (function fade() {
-    nodes.forEach(n => { if (n.opacity < 1) n.opacity = Math.min(1, n.opacity + 0.02); });
-    edges.forEach(e => { if (e.opacity < 1) e.opacity = Math.min(1, e.opacity + 0.02); });
+    nodes.forEach(n => { if (n.opacity < 1) n.opacity = Math.min(1, n.opacity + 0.022); });
+    edges.forEach(e => { if (e.opacity < 1) e.opacity = Math.min(1, e.opacity + 0.022); });
     draw();
     raf = requestAnimationFrame(fade);
   })();
-  // Stop animating after 10s (sim will have settled)
-  setTimeout(() => { sim.stop(); cancelAnimationFrame(raf); }, 10000);
+  setTimeout(() => { sim.stop(); cancelAnimationFrame(raf); }, 12000);
 
-  // Hover tooltip
-  canvas.addEventListener('mousemove', e => {
+  // Hover tooltip: show full itinerary info
+  canvas.addEventListener('mousemove', ev => {
     const rect = canvas.getBoundingClientRect();
-    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
-    const hit = nodes.find(n => n.x != null && (n.x-mx)**2 + (n.y-my)**2 < (nodeR(n)+6)**2);
-    const connectingInfo = hit && hit.type === 'hub'
-      ? connecting.filter(c => (c.via||c.hub) === hit.id).map(c => `${c.airline||''} ${c.frequency||''}×/wk${c.connect_time_min?' '+c.connect_time_min+'min cnx':''}`.trim()).join(', ')
-      : '';
-    canvas.title = hit
-      ? `${hit.label}${hit.type==='hub'?' (hub)':hit.type==='airline'?' (airline)':' (market)'}${connectingInfo?': '+connectingInfo:''}`
-      : '';
+    const mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
+    const hit = nodes.find(n => n.x != null && (n.x-mx)**2+(n.y-my)**2 < (nodeR(n)+6)**2);
+    if (!hit) { canvas.title = ''; return; }
+    if (hit.type === 'hub') {
+      const crs = connecting.filter(c => (c.via||c.connect_point||c.hub||'') === hit.id);
+      const details = crs.map(c => {
+        const itin = classifyItinerary(c);
+        return `${c.airline||''}${c.airline_2?' / '+c.airline_2:''} [${ITIN_STYLE[itin].label}] ${c.frequency||''}×/wk${c.connect_time_min?' '+c.connect_time_min+'min cnx':''}`;
+      }).join('\n');
+      canvas.title = `Hub: ${hit.label}\n${details}`;
+    } else if (hit.type === 'airline') {
+      const crs = connecting.filter(c => (c.airline||c.carrier||'') === hit.id || (c.airline_2||'') === hit.id);
+      canvas.title = `Airline: ${hit.label} · ${crs.length} itinerary(s) via this carrier`;
+    } else {
+      canvas.title = hit.label + (hit.type === 'origin' ? ' (Origin)' : hit.type === 'market' || hit.type === 'airport' ? ' (Destination)' : '');
+    }
   });
 
-  // ── Draw function ──────────────────────────────────────────────────────────
+  // ── Draw ──────────────────────────────────────────────────────────────────
   function draw() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
@@ -1499,7 +1599,7 @@ function _initFlowKG(containerId, connecting, centerLabel) {
     bg.addColorStop(0, 'rgba(28,18,58,0.35)'); bg.addColorStop(1, 'rgba(0,0,0,0.65)');
     ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
 
-    // ── Edges (lighter composite) ──────────────────────────────────────────
+    // ── Edges: lighter composite for glow ─────────────────────────────────
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     ctx.lineCap = 'round';
@@ -1508,55 +1608,59 @@ function _initFlowKG(containerId, connecting, centerLabel) {
       const tgt = typeof e.target === 'object' ? e.target : nodeMap.get(e.target);
       if (!src || !tgt || src.x == null || tgt.x == null) return;
       const ratio = e.weight / maxFreq;
-      const isToMarket = (typeof e.target === 'object' ? e.target.id : e.target) === centerId;
-      const alpha = e.opacity * (0.18 + ratio * 0.5);
-      ctx.strokeStyle = isToMarket ? `rgba(32,101,209,${alpha})` : `rgba(139,92,246,${alpha})`;
+      const alpha = e.opacity * (0.15 + ratio * 0.5);
+      ctx.strokeStyle = `rgba(${e.style.edgeRgb},${alpha})`;
       ctx.lineWidth   = Math.max(0.8, Math.min(4, 0.8 + ratio * 3));
+      ctx.setLineDash(e.style.dash);
       ctx.beginPath(); ctx.moveTo(src.x, src.y); ctx.lineTo(tgt.x, tgt.y); ctx.stroke();
     });
+    ctx.setLineDash([]);
     ctx.restore();
 
-    // ── Arrow heads ────────────────────────────────────────────────────────
+    // ── Arrows (source-over) ───────────────────────────────────────────────
     edges.forEach(e => {
       const src = typeof e.source === 'object' ? e.source : nodeMap.get(e.source);
       const tgt = typeof e.target === 'object' ? e.target : nodeMap.get(e.target);
-      if (!src || !tgt || src.x == null || tgt.x == null) return;
-      const dist = Math.hypot(tgt.x - src.x, tgt.y - src.y);
-      if (dist < 20 || e.opacity < 0.5) return;
-      const ang = Math.atan2(tgt.y - src.y, tgt.x - src.x);
-      const tr  = nodeR(tgt);
-      const ax  = tgt.x - Math.cos(ang) * (tr + 2);
-      const ay  = tgt.y - Math.sin(ang) * (tr + 2);
-      const al  = 5;
-      ctx.save(); ctx.globalAlpha = e.opacity * 0.75;
-      ctx.fillStyle = (typeof e.target === 'object' ? e.target.id : e.target) === centerId ? '#60a5fa' : '#a78bfa';
+      if (!src || !tgt || src.x == null || tgt.x == null || e.opacity < 0.45) return;
+      const dist = Math.hypot(tgt.x-src.x, tgt.y-src.y);
+      if (dist < 20) return;
+      const ang = Math.atan2(tgt.y-src.y, tgt.x-src.x);
+      const tr = nodeR(tgt);
+      const ax = tgt.x - Math.cos(ang)*(tr+2), ay = tgt.y - Math.sin(ang)*(tr+2);
+      const al = 5;
+      ctx.save(); ctx.globalAlpha = e.opacity * 0.75; ctx.fillStyle = e.style.base;
       ctx.beginPath();
       ctx.moveTo(ax, ay);
-      ctx.lineTo(ax - al*Math.cos(ang - Math.PI/6), ay - al*Math.sin(ang - Math.PI/6));
-      ctx.lineTo(ax - al*Math.cos(ang + Math.PI/6), ay - al*Math.sin(ang + Math.PI/6));
+      ctx.lineTo(ax-al*Math.cos(ang-Math.PI/6), ay-al*Math.sin(ang-Math.PI/6));
+      ctx.lineTo(ax-al*Math.cos(ang+Math.PI/6), ay-al*Math.sin(ang+Math.PI/6));
       ctx.closePath(); ctx.fill(); ctx.restore();
     });
 
-    // ── Edge freq labels ───────────────────────────────────────────────────
+    // ── Edge labels: itin type + freq ─────────────────────────────────────
     edges.forEach(e => {
       const src = typeof e.source === 'object' ? e.source : nodeMap.get(e.source);
       const tgt = typeof e.target === 'object' ? e.target : nodeMap.get(e.target);
-      if (!src || !tgt || src.x == null || tgt.x == null || e.opacity < 0.7) return;
-      const mx = (src.x + tgt.x)/2, my = (src.y + tgt.y)/2;
-      const txt = `${e.weight}×`;
+      if (!src || !tgt || src.x == null || tgt.x == null || e.opacity < 0.65) return;
+      // Only label hub→dest and airline→dest (non-stop) edges — avoid label clutter
+      const srcId = typeof e.source === 'object' ? e.source.id : e.source;
+      const tgtId = typeof e.target === 'object' ? e.target.id : e.target;
+      const isKeyEdge = tgtId === centerId || srcId === (originCode || '__origin__');
+      if (!isKeyEdge) return;
+      const mx = (src.x+tgt.x)/2, my = (src.y+tgt.y)/2;
+      const txt = `${e.itin === 'non_stop' ? '✈' : e.itin === 'interline' ? '↔' : e.itin === 'codeshare' ? '≡' : '⤳'} ${e.weight}×`;
       ctx.save();
       ctx.font = '8px system-ui,sans-serif';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       const tw = ctx.measureText(txt).width;
-      ctx.globalAlpha = e.opacity * 0.85;
-      ctx.fillStyle = 'rgba(8,6,18,0.78)';
-      ctx.fillRect(mx - tw/2 - 2, my - 5, tw + 4, 10);
-      ctx.fillStyle = '#94a3b8';
+      ctx.globalAlpha = e.opacity * 0.88;
+      ctx.fillStyle = 'rgba(8,6,18,0.82)';
+      ctx.fillRect(mx-tw/2-2, my-5, tw+4, 10);
+      ctx.fillStyle = e.style.base;
       ctx.fillText(txt, mx, my);
       ctx.restore();
     });
 
-    // ── Nodes ──────────────────────────────────────────────────────────────
+    // ── Nodes ─────────────────────────────────────────────────────────────
     nodes.forEach(n => {
       if (n.x == null) return;
       const r     = nodeR(n);
@@ -1564,46 +1668,56 @@ function _initFlowKG(containerId, connecting, centerLabel) {
       ctx.save();
       ctx.globalAlpha = n.opacity;
       ctx.shadowColor = color;
-      ctx.shadowBlur  = n.type === 'market' ? r * 3.5 : r * 2.2;
+      ctx.shadowBlur  = (n.type === 'market' || n.type === 'airport' || n.type === 'origin') ? r*3.5 : r*2;
       ctx.fillStyle   = color;
 
       if (n.type === 'airline') {
-        // Diamond shape
+        // Diamond
         ctx.beginPath();
-        ctx.moveTo(n.x,     n.y - r*1.3);
-        ctx.lineTo(n.x + r, n.y);
-        ctx.lineTo(n.x,     n.y + r*1.3);
-        ctx.lineTo(n.x - r, n.y);
+        ctx.moveTo(n.x,     n.y-r*1.3);
+        ctx.lineTo(n.x+r,   n.y);
+        ctx.lineTo(n.x,     n.y+r*1.3);
+        ctx.lineTo(n.x-r,   n.y);
+        ctx.closePath(); ctx.fill();
+      } else if (n.type === 'origin') {
+        // Pentagon-ish — origin marker
+        ctx.beginPath();
+        for (let i=0; i<5; i++) {
+          const a = (i*2*Math.PI/5) - Math.PI/2;
+          i===0 ? ctx.moveTo(n.x+r*Math.cos(a), n.y+r*Math.sin(a))
+                : ctx.lineTo(n.x+r*Math.cos(a), n.y+r*Math.sin(a));
+        }
         ctx.closePath(); ctx.fill();
       } else {
         ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, Math.PI*2); ctx.fill();
       }
       ctx.shadowBlur = 0;
 
-      // Specular highlight
+      // Specular
       if (n.opacity > 0.3 && n.type !== 'airline') {
-        ctx.fillStyle = 'rgba(255,255,255,0.18)';
-        ctx.beginPath(); ctx.arc(n.x - r*0.25, n.y - r*0.3, r*0.42, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = 'rgba(255,255,255,0.16)';
+        ctx.beginPath(); ctx.arc(n.x-r*0.25, n.y-r*0.3, r*0.4, 0, Math.PI*2); ctx.fill();
       }
       ctx.restore();
 
-      // Label with dark pill background
+      // Label pill
       const ly = n.y + r + 4;
       ctx.save();
       ctx.globalAlpha = n.opacity * 0.92;
-      ctx.font = `${n.type === 'market' ? 'bold ' : ''}${n.type === 'market' ? 9 : 8}px system-ui,sans-serif`;
+      ctx.font = `${(n.type!=='airline'?'bold ':'')}${n.type==='airline'?8:9}px system-ui,sans-serif`;
       ctx.textAlign = 'center'; ctx.textBaseline = 'top';
       const tw = ctx.measureText(n.label).width;
-      ctx.fillStyle = 'rgba(8,6,18,0.8)';
-      ctx.fillRect(n.x - tw/2 - 3, ly - 1, tw + 6, 11);
-      ctx.fillStyle = n.type === 'market' ? '#93c5fd' : color;
+      ctx.fillStyle = 'rgba(8,6,18,0.82)';
+      ctx.fillRect(n.x-tw/2-3, ly-1, tw+6, 11);
+      ctx.fillStyle = color;
       ctx.fillText(n.label, n.x, ly);
       ctx.restore();
     });
   }
 }
+
+function renderLocalFlowSplit(viz) {
   const card = document.createElement('div');
-  card.className = 'lf-split-card';
   const localPax = viz.local_pax || 0, flowPax = viz.flow_pax || 0;
   const localPct = viz.local_pct || 0, flowPct = viz.flow_pct || 0;
   const localRev = viz.local_rev, flowRev = viz.flow_rev;
@@ -1652,10 +1766,12 @@ function _initFlowKG(containerId, connecting, centerLabel) {
       <div class="lf-connect-title">🔗 Top Connecting Routes (Flow Contributors)</div>
       <div id="${kgId}" class="lf-kg-wrap"></div>
       <div class="lf-kg-legend">
-        <span class="lf-kg-legend-item"><span class="lf-kg-legend-dot" style="background:#2065d1"></span>Market / Route</span>
-        <span class="lf-kg-legend-item"><span class="lf-kg-legend-dot" style="background:#f59e0b"></span>Hub Airport</span>
+        <span class="lf-kg-legend-item"><span class="lf-kg-legend-dot" style="background:#10b981"></span>Non-stop</span>
+        <span class="lf-kg-legend-item"><span class="lf-kg-legend-dot" style="background:#2065d1"></span>Online 1-stop</span>
+        <span class="lf-kg-legend-item"><span class="lf-kg-legend-dot" style="background:#f59e0b"></span>Interline ╌</span>
+        <span class="lf-kg-legend-item"><span class="lf-kg-legend-dot" style="background:#a855f7"></span>Codeshare ╌╌</span>
+        <span class="lf-kg-legend-item"><span class="lf-kg-legend-dot" style="background:#f59e0b"></span>Hub airport</span>
         <span class="lf-kg-legend-item"><span class="lf-kg-legend-diamond" style="background:#8b5cf6"></span>Airline</span>
-        <span class="lf-kg-legend-item" style="color:#a0aec0">Edge thickness = weekly frequency · Labels show freq×</span>
       </div>
     </div>`;
   }
@@ -1680,7 +1796,7 @@ function _initFlowKG(containerId, connecting, centerLabel) {
   // Boot the mini-KG after the DOM is painted
   if (kgId) {
     const routeLabel = viz.route || viz.origin_dest || viz.title || 'Flow';
-    setTimeout(() => _initFlowKG(kgId, connecting, routeLabel), 60);
+    setTimeout(() => _initFlowKG(kgId, connecting, routeLabel, viz), 60);
   }
   return card;
 }
