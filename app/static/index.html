@@ -191,9 +191,9 @@
     .lf-advice { background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 12px 16px; margin-top: 14px; font-size: 0.82rem; color: #92400e; line-height: 1.6; }
     .lf-advice strong { color: #78350f; }
     /* Mini KG for connecting routes */
-    .lf-kg-wrap { margin-top: 10px; border-radius: 8px; overflow: hidden; background: #ffffff; min-height: 200px; border: 1px solid #e2e8f0; }
+    .lf-kg-wrap { margin-top: 10px; border-radius: 8px; overflow: hidden; background: #0c0b14; min-height: 300px; }
     .lf-kg-legend { display: flex; gap: 14px; flex-wrap: wrap; padding: 8px 4px 0; }
-    .lf-kg-legend-item { display: flex; align-items: center; gap: 5px; font-size: 0.7rem; color: #718096; }
+    .lf-kg-legend-item { display: flex; align-items: center; gap: 5px; font-size: 0.7rem; color: #94a3b8; }
     .lf-kg-legend-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
     .lf-kg-legend-diamond { width: 9px; height: 9px; transform: rotate(45deg); flex-shrink: 0; }
 
@@ -1394,42 +1394,21 @@ function _initFlowKG(containerId, connecting, centerLabel, viz) {
     const wrap = document.getElementById(containerId);
     if (!wrap || !connecting || !connecting.length) return;
 
-    const W   = Math.max(wrap.getBoundingClientRect().width || wrap.offsetWidth || 480, 360);
-    const H   = 280;
+    // ── Canvas setup (same as brain panel) ───────────────────────────────────
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-
-    const canvas = document.createElement('canvas');
-    canvas.width  = W * dpr;
-    canvas.height = H * dpr;
-    canvas.style.width  = W + 'px';
-    canvas.style.height = H + 'px';
-    canvas.style.display = 'block';
-    canvas.style.borderRadius = '8px';
-    canvas.style.cursor = 'default';
-    canvas.style.border = '1px solid #e2e8f0';
     wrap.innerHTML = '';
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText = 'width:100%;height:100%;display:block;cursor:crosshair;border-radius:8px;';
+    wrap.style.minHeight  = '300px';
     wrap.appendChild(canvas);
     const ctx = canvas.getContext('2d');
-    ctx.scale(dpr, dpr);
 
-    // ── PyGraphistry-style palette (white canvas, distinct node colors) ────────
-    const PAL = {
-      bg:       '#ffffff',
-      grid:     '#f1f5f9',
-      routeEdge:'#cbd5e1',   // light gray for main O&D edge
-      feederEdge:'#fb923c',  // orange for feeder edges
-      onwardEdge:'#818cf8',  // indigo for onward edges
-      alLabel:  '#64748b',   // slate for airline code labels
-      freqLabel:'#1e293b',   // dark for freq badges
-      border:   '#e2e8f0',
-      text:     '#1e293b',
-      subtext:  '#64748b',
-      // Node fills
-      originFill:'#10b981',  originBorder:'#059669',  // emerald
-      destFill:  '#3b82f6',  destBorder:  '#1d4ed8',  // blue
-      feederFill:'#f97316',  feederBorder:'#c2410c',  // orange
-      onwardFill:'#6366f1',  onwardBorder:'#4338ca',  // indigo
-    };
+    function resizeCanvas() {
+      canvas.width  = wrap.offsetWidth  * dpr;
+      canvas.height = wrap.offsetHeight * dpr;
+    }
+    resizeCanvas();
+    new ResizeObserver(resizeCanvas).observe(wrap);
 
     // ── O&D airports ──────────────────────────────────────────────────────────
     const odMatch    = (viz && viz.origin) ? null
@@ -1439,285 +1418,367 @@ function _initFlowKG(containerId, connecting, centerLabel, viz) {
     const destCode   = (viz && viz.destination) ? viz.destination.toUpperCase()
                                                 : (odMatch ? odMatch[2].toUpperCase() : 'DST');
 
-    // ── Split by direction ────────────────────────────────────────────────────
-    const feeders = connecting.filter(c => (c.direction || '').includes('feed') || !(c.direction || '').includes('onward'));
-    const onwards = connecting.filter(c => (c.direction || '').includes('onward'));
-    const topF    = feeders.slice(0, 8);
-    const topO    = onwards.slice(0, 6);
+    // ── Color palette (matches brain panel exactly) ───────────────────────────
+    const NODE_COLOR = {
+      origin:  '#10b981',   // emerald
+      dest:    '#3b82f6',   // blue
+      hub_f:   '#f59e0b',   // amber  — feeder
+      hub_o:   '#818cf8',   // indigo — onward
+      airline: '#c084fc',   // violet — carrier
+    };
+    const EDGE_COLOR = {
+      main:    '99,120,150',   // gray for main O&D route
+      feeder:  '245,158,11',   // amber
+      onward:  '129,140,248',  // indigo (dashed)
+      serves:  '192,132,252',  // violet for airline→hub
+    };
 
-    const maxFreq = Math.max(
-      ...topF.map(c => +(c.weekly_freq || c.frequency || 1)),
-      ...topO.map(c => +(c.weekly_freq || c.frequency || 1)), 1
-    );
+    // ── Split connecting routes ───────────────────────────────────────────────
+    const feeders = connecting.filter(c => (c.direction||'').includes('feed') || !(c.direction||'').includes('onward'));
+    const onwards = connecting.filter(c => (c.direction||'').includes('onward'));
+    const topF = feeders.slice(0, 8);
+    const topO = onwards.slice(0, 6);
+    const maxFreq = Math.max(...[...topF, ...topO].map(c => +(c.weekly_freq||c.frequency||1)), 1);
 
-    // ── Layout constants ──────────────────────────────────────────────────────
-    const PAD   = 22;
-    const origX = W * 0.33, origY = H / 2;
-    const destX = W * 0.67, destY = H / 2;
+    // ── Build node + edge arrays ──────────────────────────────────────────────
+    const nodeMap = new Map();
+    const edges   = [];
 
-    // Spread hub nodes vertically in left/right bands
-    function spreadY(count) {
-      if (count === 0) return [];
-      const usableH = H - PAD * 2;
-      const step = Math.min(36, usableH / count);
-      const start = H / 2 - (count - 1) * step / 2;
-      return Array.from({ length: count }, (_, i) => start + i * step);
+    // Helper — add or merge node
+    function addNode(id, props) {
+      if (!nodeMap.has(id)) nodeMap.set(id, { id, opacity: 0, x: null, y: null, ...props });
+      else { const n = nodeMap.get(id); n.weight = (n.weight||1) + (props.weight||1); }
     }
-    const feederYs = spreadY(topF.length);
-    const onwardYs = spreadY(topO.length);
 
-    const feederX = PAD + 28;
-    const onwardX = W - PAD - 28;
+    const W0 = wrap.offsetWidth  || 480;
+    const H0 = wrap.offsetHeight || 300;
 
-    // ── Build node and edge lists ─────────────────────────────────────────────
-    const nodes = [
-      { label: originCode, x: origX, y: origY, r: 16,
-        fill: PAL.originFill, border: PAL.originBorder,
-        type: 'origin', detail: originCode + ' (Origin)' },
-      { label: destCode,   x: destX, y: destY, r: 16,
-        fill: PAL.destFill,   border: PAL.destBorder,
-        type: 'dest',   detail: destCode + ' (Destination)' },
-    ];
-    const edges = [];
-
-    // Main route edge (bi-directional double line style)
-    edges.push({
-      x1: origX, y1: origY, x2: destX, y2: destY,
-      color: PAL.routeEdge, w: 3, dash: [], arrow: false,
-      midLabel: null,
+    // Origin & Destination — pinned
+    addNode(originCode, {
+      label: originCode, type: 'origin', r: 15, weight: 20,
+      color: NODE_COLOR.origin, detail: originCode + ' (Origin)',
+      fx: W0 * 0.30, fy: H0 * 0.50,
     });
+    addNode(destCode, {
+      label: destCode, type: 'dest', r: 15, weight: 20,
+      color: NODE_COLOR.dest, detail: destCode + ' (Destination)',
+      fx: W0 * 0.70, fy: H0 * 0.50,
+    });
+
+    // Main route edge
+    edges.push({ source: originCode, target: destCode, type: 'main',
+                 rgb: EDGE_COLOR.main, alpha: 0.40, w: 1.8, dash: [], opacity: 0, freq: null });
 
     // Feeder hubs
     topF.forEach((cr, i) => {
-      const hub  = (cr.via || cr.connect_point || '').trim();
-      const al   = (cr.airline || '').trim();
+      const hub = (cr.via || cr.connect_point || '').trim();
+      const al  = (cr.airline || '').trim();
       const freq = +(cr.weekly_freq || cr.frequency || 1);
       if (!hub) return;
-      const nx = feederX, ny = feederYs[i];
-      const r = Math.max(9, Math.min(15, 7 + Math.sqrt(freq) * 0.9));
-      nodes.push({ label: hub, x: nx, y: ny, r,
-                   fill: PAL.feederFill, border: PAL.feederBorder,
-                   type: 'hub_f', detail: hub + ' → ' + originCode + ' (' + al + ', ' + freq + '×/wk)' });
-      const ratio = freq / maxFreq;
-      edges.push({
-        x1: nx, y1: ny, x2: origX, y2: origY,
-        color: PAL.feederEdge, w: Math.max(1, ratio * 3.5), dash: [],
-        arrow: true, arrowAt: 'end',
-        midLabel: al ? { text: al, color: PAL.alLabel } : null,
-        freqBadge: freq + '×',
+      const angle = -Math.PI/2 + (i - (topF.length-1)/2) * (Math.PI / Math.max(topF.length, 2));
+      addNode('H_' + hub, {
+        label: hub, type: 'hub_f', r: Math.max(7, Math.min(13, 5 + Math.sqrt(freq)*1.1)),
+        weight: freq, color: NODE_COLOR.hub_f, detail: hub + '→' + originCode + ' (' + al + ', ' + freq + '×/wk)',
+        x: W0 * 0.30 + Math.cos(angle + Math.PI) * 100,
+        y: H0 * 0.50 + Math.sin(angle + Math.PI) * 80,
       });
+      edges.push({ source: 'H_' + hub, target: originCode, type: 'feeder',
+                   rgb: EDGE_COLOR.feeder, alpha: 0.55 * (freq / maxFreq) + 0.12,
+                   w: Math.max(0.6, freq / maxFreq * 2.5), dash: [],
+                   opacity: 0, freq, label: freq + '×' });
+      if (al) {
+        addNode('A_' + al, {
+          label: al, type: 'airline', r: 7, weight: freq,
+          color: NODE_COLOR.airline, detail: 'Carrier: ' + al,
+          x: W0 * 0.30 + Math.cos(angle + Math.PI) * 60,
+          y: H0 * 0.50 + Math.sin(angle + Math.PI) * 55,
+        });
+        edges.push({ source: 'A_' + al, target: 'H_' + hub, type: 'serves',
+                     rgb: EDGE_COLOR.serves, alpha: 0.22, w: 0.5, dash: [3,3], opacity: 0, freq: null });
+      }
     });
 
     // Onward hubs
     topO.forEach((cr, i) => {
-      const hub  = (cr.via || cr.connect_point || '').trim();
-      const al   = (cr.airline || '').trim();
+      const hub = (cr.via || cr.connect_point || '').trim();
+      const al  = (cr.airline || '').trim();
       const freq = +(cr.weekly_freq || cr.frequency || 1);
       if (!hub) return;
-      const nx = onwardX, ny = onwardYs[i];
-      const r = Math.max(9, Math.min(15, 7 + Math.sqrt(freq) * 0.9));
-      nodes.push({ label: hub, x: nx, y: ny, r,
-                   fill: PAL.onwardFill, border: PAL.onwardBorder,
-                   type: 'hub_o', detail: destCode + ' → ' + hub + ' (' + al + ', ' + freq + '×/wk)' });
-      const ratio = freq / maxFreq;
-      edges.push({
-        x1: destX, y1: destY, x2: nx, y2: ny,
-        color: PAL.onwardEdge, w: Math.max(1, ratio * 3.5), dash: [5, 3],
-        arrow: true, arrowAt: 'end',
-        midLabel: al ? { text: al, color: PAL.alLabel } : null,
-        freqBadge: freq + '×',
+      const angle = -Math.PI/2 + (i - (topO.length-1)/2) * (Math.PI / Math.max(topO.length, 2));
+      addNode('O_' + hub, {
+        label: hub, type: 'hub_o', r: Math.max(7, Math.min(13, 5 + Math.sqrt(freq)*1.1)),
+        weight: freq, color: NODE_COLOR.hub_o, detail: destCode + '→' + hub + ' (' + al + ', ' + freq + '×/wk)',
+        x: W0 * 0.70 + Math.cos(angle) * 100,
+        y: H0 * 0.50 + Math.sin(angle) * 80,
       });
+      edges.push({ source: destCode, target: 'O_' + hub, type: 'onward',
+                   rgb: EDGE_COLOR.onward, alpha: 0.45 * (freq / maxFreq) + 0.10,
+                   w: Math.max(0.6, freq / maxFreq * 2.5), dash: [5, 3],
+                   opacity: 0, freq, label: freq + '×' });
+      if (al) {
+        addNode('A_' + al, {
+          label: al, type: 'airline', r: 7, weight: freq,
+          color: NODE_COLOR.airline, detail: 'Carrier: ' + al,
+          x: W0 * 0.70 + Math.cos(angle) * 60,
+          y: H0 * 0.50 + Math.sin(angle) * 55,
+        });
+        edges.push({ source: 'O_' + hub, target: 'A_' + al, type: 'serves',
+                     rgb: EDGE_COLOR.serves, alpha: 0.22, w: 0.5, dash: [3,3], opacity: 0, freq: null });
+      }
     });
 
-    // ── Helper: draw arrowhead ────────────────────────────────────────────────
-    function drawArrow(x2, y2, ang, size, color) {
-      ctx.save();
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.moveTo(x2, y2);
-      ctx.lineTo(x2 - size * Math.cos(ang - Math.PI / 6),
-                 y2 - size * Math.sin(ang - Math.PI / 6));
-      ctx.lineTo(x2 - size * Math.cos(ang + Math.PI / 6),
-                 y2 - size * Math.sin(ang + Math.PI / 6));
-      ctx.closePath();
-      ctx.fill();
-      ctx.restore();
-    }
+    const nodes = Array.from(nodeMap.values());
 
-    // ── Draw ──────────────────────────────────────────────────────────────────
-    function draw(alpha) {
-      alpha = alpha === undefined ? 1 : alpha;
+    // ── D3 force simulation (identical physics to brain panel) ────────────────
+    const sim = d3Force.forceSimulation(nodes)
+      .force('charge',    d3Force.forceManyBody().strength(n => -120 - (n.weight||1)*8).distanceMax(300))
+      .force('link',      d3Force.forceLink(edges).id(n => n.id)
+                            .distance(e => {
+                              if (e.type === 'main')   return W0 * 0.40;
+                              if (e.type === 'serves') return 45;
+                              return 85;
+                            })
+                            .strength(e => e.type === 'main' ? 1.0 : e.type === 'serves' ? 0.3 : 0.5))
+      .force('center',    d3Force.forceCenter(W0/2, H0/2).strength(0.01))
+      .force('collision', d3Force.forceCollide().radius(n => (n.r||8) + 10).strength(0.8))
+      // Keep feeders left, onward right — gently
+      .force('xCluster',  d3Force.forceX(n => {
+        if (n.fx != null) return n.fx;
+        if (n.type === 'hub_f' || (n.type === 'airline' && _isFeederAirline(n.id))) return W0 * 0.15;
+        if (n.type === 'hub_o') return W0 * 0.85;
+        return W0 / 2;
+      }).strength(n => n.fx != null ? 0 : 0.15))
+      .force('yCenter',   d3Force.forceY(H0/2).strength(n => n.fy != null ? 0 : 0.05))
+      .alphaDecay(0.012)
+      .velocityDecay(0.45);
 
-      // White background
-      ctx.fillStyle = PAL.bg;
-      ctx.fillRect(0, 0, W, H);
-
-      // Subtle dot-grid (PyGraphistry style)
-      ctx.save();
-      ctx.globalAlpha = alpha * 0.35;
-      ctx.fillStyle = '#cbd5e1';
-      const gStep = 24;
-      for (let gx = gStep; gx < W; gx += gStep)
-        for (let gy = gStep; gy < H; gy += gStep) {
-          ctx.beginPath();
-          ctx.arc(gx, gy, 0.8, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      ctx.restore();
-
-      // Section banners
-      ctx.save();
-      ctx.globalAlpha = alpha * 0.85;
-      ctx.font = 'bold 8px system-ui,sans-serif';
-      ctx.fillStyle = PAL.subtext;
-      ctx.textAlign = 'center';
-      if (topF.length) {
-        ctx.fillText('◀  FEEDERS INTO ' + originCode, feederX + (origX - feederX) / 2, 10);
-      }
-      if (topO.length) {
-        ctx.fillText('ONWARD FROM ' + destCode + '  ▶', destX + (onwardX - destX) / 2, 10);
-      }
-      ctx.restore();
-
-      // ── Edges ───────────────────────────────────────────────────────────────
-      ctx.save();
-      ctx.globalAlpha = alpha;
-      ctx.lineCap = 'round';
-
-      edges.forEach(e => {
-        const dx = e.x2 - e.x1, dy = e.y2 - e.y1;
-        const dist = Math.hypot(dx, dy);
-        if (dist < 1) return;
-        const ang  = Math.atan2(dy, dx);
-
-        // Shorten line to not overdraw inside node circles
-        const srcR = (e === edges[0]) ? 16 : (e.x1 < W / 2 ? 0 : 16);
-        const tgtR = 16;
-        const sx = e.x1 + Math.cos(ang) * srcR;
-        const sy = e.y1 + Math.sin(ang) * srcR;
-        const ex = e.x2 - Math.cos(ang) * (tgtR + (e.arrow ? 5 : 0));
-        const ey = e.y2 - Math.sin(ang) * (tgtR + (e.arrow ? 5 : 0));
-
-        ctx.strokeStyle = e.color;
-        ctx.lineWidth   = e.w;
-        ctx.setLineDash(e.dash);
-        ctx.beginPath();
-        ctx.moveTo(sx, sy);
-        ctx.lineTo(ex, ey);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        // Arrowhead
-        if (e.arrow) {
-          drawArrow(e.x2 - Math.cos(ang) * tgtR,
-                    e.y2 - Math.sin(ang) * tgtR,
-                    ang, 7, e.color);
-        }
-
-        // Frequency badge (small pill near midpoint)
-        if (e.freqBadge) {
-          const mx = (sx + ex) / 2 + Math.sin(ang) * 9;
-          const my = (sy + ey) / 2 - Math.cos(ang) * 9;
-          ctx.font = 'bold 7px system-ui,sans-serif';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          const bw = ctx.measureText(e.freqBadge).width + 6;
-          ctx.fillStyle = '#ffffff';
-          ctx.strokeStyle = e.color;
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.rect(mx - bw/2, my - 6, bw, 12);
-          ctx.fill();
-          ctx.stroke();
-          ctx.fillStyle = PAL.freqLabel;
-          ctx.fillText(e.freqBadge, mx, my);
-        }
-
-        // Airline code label (small, near 1/3 of edge)
-        if (e.midLabel) {
-          const lx = e.x1 + (e.x2 - e.x1) * 0.38 + Math.sin(ang) * 11;
-          const ly = e.y1 + (e.y2 - e.y1) * 0.38 - Math.cos(ang) * 11;
-          ctx.font = '7px system-ui,sans-serif';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillStyle = e.midLabel.color;
-          ctx.fillText(e.midLabel.text, lx, ly);
-        }
-      });
-      ctx.restore();
-
-      // ── Nodes ───────────────────────────────────────────────────────────────
-      nodes.forEach(n => {
-        ctx.save();
-        ctx.globalAlpha = alpha;
-
-        // Drop shadow (subtle, no glow)
-        ctx.shadowColor   = 'rgba(0,0,0,0.12)';
-        ctx.shadowBlur    = 6;
-        ctx.shadowOffsetY = 2;
-
-        // Fill
-        ctx.fillStyle = n.fill;
-        ctx.beginPath();
-        ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Border
-        ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
-        ctx.strokeStyle = n.border;
-        ctx.lineWidth   = 2;
-        ctx.stroke();
-
-        ctx.restore();
-
-        // Label (inside node for large nodes, below for small)
-        ctx.save();
-        ctx.globalAlpha = alpha;
-        const isMain = n.type === 'origin' || n.type === 'dest';
-        ctx.font      = (isMain ? 'bold 9px' : 'bold 8px') + ' system-ui,sans-serif';
-        ctx.textAlign = 'center';
-
-        if (isMain) {
-          // Label inside node
-          ctx.textBaseline = 'middle';
-          ctx.fillStyle    = '#ffffff';
-          ctx.fillText(n.label, n.x, n.y);
-        } else {
-          // Label below node
-          ctx.textBaseline = 'top';
-          const ly = n.y + n.r + 3;
-          const tw = ctx.measureText(n.label).width;
-          ctx.fillStyle = 'rgba(255,255,255,0.9)';
-          ctx.fillRect(n.x - tw/2 - 3, ly, tw + 6, 12);
-          ctx.fillStyle = PAL.text;
-          ctx.fillText(n.label, n.x, ly + 1);
-        }
-        ctx.restore();
+    // Helper — is this airline node linked to a feeder hub?
+    function _isFeederAirline(alId) {
+      return edges.some(e => {
+        const srcId = typeof e.source === 'object' ? e.source.id : e.source;
+        const tgtId = typeof e.target === 'object' ? e.target.id : e.target;
+        return (srcId === alId && tgtId && tgtId.startsWith('H_')) ||
+               (tgtId === alId && srcId && srcId.startsWith('H_'));
       });
     }
 
-    // ── Smooth fade-in ────────────────────────────────────────────────────────
-    const t0 = performance.now();
-    function frame(ts) {
-      const p = Math.min(1, (ts - t0) / 600);
-      draw(p);
-      if (p < 1) requestAnimationFrame(frame);
-    }
-    requestAnimationFrame(frame);
+    // ── Pan + zoom (same as brain panel) ─────────────────────────────────────
+    const tf = { x: 0, y: 0, scale: 1 };
+    let panning = false, panStart = null, hoverNode = null;
 
-    // ── Hover tooltip ─────────────────────────────────────────────────────────
-    canvas.addEventListener('mousemove', ev => {
+    canvas.addEventListener('wheel', ev => {
+      ev.preventDefault();
       const rect = canvas.getBoundingClientRect();
       const mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
-      const hit = nodes.find(n => Math.hypot(n.x - mx, n.y - my) <= n.r + 4);
-      canvas.title = hit ? hit.detail : '';
-      canvas.style.cursor = hit ? 'pointer' : 'default';
+      const ns = Math.max(0.1, Math.min(6, tf.scale * (ev.deltaY < 0 ? 1.12 : 0.89)));
+      tf.x = mx - (mx - tf.x) * (ns / tf.scale);
+      tf.y = my - (my - tf.y) * (ns / tf.scale);
+      tf.scale = ns;
+    }, { passive: false });
+
+    canvas.addEventListener('mousedown', ev => {
+      const hit = _hitNode(ev.offsetX, ev.offsetY);
+      if (hit) { canvas.title = hit.detail || hit.label; }
+      else { panning = true; panStart = { x: ev.offsetX, y: ev.offsetY, tx: tf.x, ty: tf.y }; }
     });
+    canvas.addEventListener('mousemove', ev => {
+      if (panning && panStart) {
+        tf.x = panStart.tx + (ev.offsetX - panStart.x);
+        tf.y = panStart.ty + (ev.offsetY - panStart.y);
+      } else {
+        const hit = _hitNode(ev.offsetX, ev.offsetY);
+        hoverNode = hit ? hit.id : null;
+        canvas.style.cursor = hit ? 'pointer' : 'crosshair';
+      }
+    });
+    canvas.addEventListener('mouseup',    () => { panning = false; panStart = null; });
+    canvas.addEventListener('mouseleave', () => { panning = false; hoverNode = null; });
+
+    function _hitNode(cx, cy) {
+      const wx = (cx - tf.x) / tf.scale, wy = (cy - tf.y) / tf.scale;
+      let best = null, bestD = Infinity;
+      nodes.forEach(n => {
+        if (n.x == null) return;
+        const d = Math.hypot(n.x - wx, n.y - wy);
+        if (d < (n.r||8) + 6 && d < bestD) { best = n; bestD = d; }
+      });
+      return best;
+    }
+
+    // ── RAF draw loop (brain-panel style) ─────────────────────────────────────
+    let raf = null;
+
+    function frame() {
+      const W = canvas.width / dpr, H = canvas.height / dpr;
+
+      // Per-frame fade-in (+0.05/frame = ~300ms at 60fps, same as brain)
+      nodes.forEach(n => { if (n.opacity < 1) n.opacity = Math.min(1, n.opacity + 0.05); });
+      edges.forEach(e => { if (e.opacity < 1) e.opacity = Math.min(1, e.opacity + 0.05); });
+
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      // ── Background (exact brain-panel dark space) ──────────────────────────
+      ctx.fillStyle = '#0c0b14';
+      ctx.fillRect(0, 0, W, H);
+      const vg = ctx.createRadialGradient(W/2, H/2, 0, W/2, H/2, Math.max(W, H)*0.6);
+      vg.addColorStop(0, 'rgba(30,20,60,0.25)');
+      vg.addColorStop(1, 'rgba(0,0,0,0.55)');
+      ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+
+      // Section labels (faint, in world-space center)
+      ctx.save();
+      ctx.globalAlpha = 0.30;
+      ctx.font = 'bold 9px -apple-system,"Segoe UI",sans-serif';
+      ctx.fillStyle = '#94a3b8'; ctx.textAlign = 'center';
+      if (topF.length) ctx.fillText('◀ FEEDERS INTO ' + originCode, W * 0.17, 18);
+      if (topO.length) ctx.fillText('ONWARD FROM ' + destCode + ' ▶', W * 0.83, 18);
+      ctx.restore();
+
+      ctx.save();
+      ctx.translate(tf.x, tf.y);
+      ctx.scale(tf.scale, tf.scale);
+
+      // ── Edges — additive ('lighter') for glow, identical to brain panel ────
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.lineCap = 'round';
+      edges.forEach(e => {
+        const src = typeof e.source === 'object' ? e.source : nodeMap.get(e.source);
+        const tgt = typeof e.target === 'object' ? e.target : nodeMap.get(e.target);
+        if (!src || !tgt || src.x == null || tgt.x == null) return;
+        ctx.globalAlpha = e.alpha * e.opacity;
+        ctx.strokeStyle = `rgba(${e.rgb},1)`;
+        ctx.lineWidth   = e.w / tf.scale;
+        ctx.setLineDash(e.dash.map(d => d / tf.scale));
+        ctx.beginPath(); ctx.moveTo(src.x, src.y); ctx.lineTo(tgt.x, tgt.y); ctx.stroke();
+        ctx.setLineDash([]);
+      });
+      ctx.restore(); // back to source-over
+
+      // ── Arrowheads on directional edges (source-over) ─────────────────────
+      edges.forEach(e => {
+        if (e.type === 'main' || e.type === 'serves') return;
+        const src = typeof e.source === 'object' ? e.source : nodeMap.get(e.source);
+        const tgt = typeof e.target === 'object' ? e.target : nodeMap.get(e.target);
+        if (!src || !tgt || src.x == null || tgt.x == null || e.opacity < 0.3) return;
+        const dist = Math.hypot(tgt.x - src.x, tgt.y - src.y);
+        if (dist < 25) return;
+        const ang  = Math.atan2(tgt.y - src.y, tgt.x - src.x);
+        const tgtR = tgt.r || 8;
+        const ax   = tgt.x - Math.cos(ang) * (tgtR + 2);
+        const ay   = tgt.y - Math.sin(ang) * (tgtR + 2);
+        const al   = 7 / tf.scale;
+        ctx.save(); ctx.globalAlpha = 0.75 * e.opacity;
+        ctx.fillStyle = `rgba(${e.rgb},1)`;
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(ax - al*Math.cos(ang-Math.PI/6), ay - al*Math.sin(ang-Math.PI/6));
+        ctx.lineTo(ax - al*Math.cos(ang+Math.PI/6), ay - al*Math.sin(ang+Math.PI/6));
+        ctx.closePath(); ctx.fill(); ctx.restore();
+      });
+
+      // ── Edge labels (freq badges, same style as brain) ─────────────────────
+      edges.forEach(e => {
+        if (!e.label || e.type === 'serves') return;
+        const src = typeof e.source === 'object' ? e.source : nodeMap.get(e.source);
+        const tgt = typeof e.target === 'object' ? e.target : nodeMap.get(e.target);
+        if (!src || !tgt || src.x == null || tgt.x == null || e.opacity < 0.5 || tf.scale < 0.5) return;
+        const mx = (src.x+tgt.x)/2, my = (src.y+tgt.y)/2;
+        const txt = e.label;
+        const fs = 8 / tf.scale;
+        ctx.save();
+        ctx.font = `${fs}px -apple-system,"Segoe UI",sans-serif`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        const tw = ctx.measureText(txt).width;
+        ctx.globalAlpha = e.opacity * 0.88;
+        ctx.fillStyle = 'rgba(8,6,18,0.80)';
+        ctx.fillRect(mx - tw/2 - 3, my - fs/2 - 2, tw + 6, fs + 4);
+        ctx.fillStyle = `rgba(${e.rgb},1)`;
+        ctx.fillText(txt, mx, my);
+        ctx.restore();
+      });
+
+      // ── Nodes — glow + shapes (brain-panel pattern) ────────────────────────
+      nodes.forEach(n => {
+        if (n.x == null) return;
+        const isHov  = n.id === hoverNode;
+        const r      = (n.r || 8);
+        const alpha  = n.opacity;
+        if (alpha < 0.01) return;
+
+        ctx.save();
+        ctx.globalAlpha = alpha;
+
+        // Glow via shadowBlur (same as brain panel)
+        const glowSize = isHov ? r*4 : (n.type === 'origin' || n.type === 'dest') ? r*3 : r*2.2;
+        ctx.shadowColor = n.color;
+        ctx.shadowBlur  = glowSize;
+
+        ctx.fillStyle = n.color;
+        if (n.type === 'airline') {
+          // Diamond (Carrier shape, same as brain)
+          ctx.beginPath();
+          ctx.moveTo(n.x,         n.y - r*1.4);
+          ctx.lineTo(n.x + r*1.1, n.y);
+          ctx.lineTo(n.x,         n.y + r*1.4);
+          ctx.lineTo(n.x - r*1.1, n.y);
+          ctx.closePath(); ctx.fill();
+        } else {
+          ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, Math.PI*2); ctx.fill();
+        }
+
+        if (isHov) {
+          ctx.shadowBlur = 0;
+          ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 1.5 / tf.scale;
+          if (n.type === 'airline') ctx.stroke();
+          else { ctx.beginPath(); ctx.arc(n.x, n.y, r+2, 0, Math.PI*2); ctx.stroke(); }
+        }
+        ctx.shadowBlur = 0;
+        ctx.restore();
+
+        // Label — all nodes labeled (brain style: dark pill + colored text)
+        const showLabel = n.type === 'origin' || n.type === 'dest'
+                       || n.type === 'hub_f'  || n.type === 'hub_o'
+                       || n.type === 'airline';
+        if (showLabel) {
+          const isMain = n.type === 'origin' || n.type === 'dest';
+          const fs = (isMain ? 10 : 8) / tf.scale;
+          const lbl = n.label, ly = n.y + r + 4 / tf.scale;
+          ctx.save();
+          ctx.font = `${isMain ? '600 ' : ''}${fs}px -apple-system,"Segoe UI",sans-serif`;
+          ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+          const tw = ctx.measureText(lbl).width;
+          ctx.globalAlpha = n.opacity * 0.92;
+          ctx.fillStyle = 'rgba(8,6,18,0.75)';
+          ctx.fillRect(n.x - tw/2 - 3, ly - 1, tw + 6, fs + 3);
+          ctx.fillStyle = n.color;
+          ctx.fillText(lbl, n.x, ly);
+          ctx.restore();
+        }
+      });
+
+      ctx.restore(); // undo translate+scale
+      raf = requestAnimationFrame(frame);
+    }
+
+    raf = requestAnimationFrame(frame);
+
+    // Stop sim after it settles; keep RAF running for interactivity
+    setTimeout(() => sim.alphaTarget(0), 8000);
+
+    // Cleanup when card is removed from DOM
+    new MutationObserver(() => {
+      if (!document.contains(canvas)) {
+        cancelAnimationFrame(raf);
+        sim.stop();
+      }
+    }).observe(document.body, { childList: true, subtree: true });
 
   } catch (err) {
     console.error('[FlowKG] render error:', err);
   }
 }
+
 
 function renderLocalFlowSplit(viz) {
   const card = document.createElement('div');
@@ -1771,8 +1832,9 @@ function renderLocalFlowSplit(viz) {
       <div class="lf-kg-legend">
         <span class="lf-kg-legend-item"><span class="lf-kg-legend-dot" style="background:#10b981"></span>Origin</span>
         <span class="lf-kg-legend-item"><span class="lf-kg-legend-dot" style="background:#3b82f6"></span>Destination</span>
-        <span class="lf-kg-legend-item"><span class="lf-kg-legend-dot" style="background:#f97316"></span>Feeder hub ▶</span>
-        <span class="lf-kg-legend-item"><span class="lf-kg-legend-dot" style="background:#6366f1"></span>Onward hub ╌ ╌</span>
+        <span class="lf-kg-legend-item"><span class="lf-kg-legend-dot" style="background:#f59e0b"></span>Feeder hub →</span>
+        <span class="lf-kg-legend-item"><span class="lf-kg-legend-dot" style="background:#818cf8"></span>Onward hub ╌</span>
+        <span class="lf-kg-legend-item"><span class="lf-kg-legend-diamond" style="background:#c084fc"></span>Airline ◆</span>
       </div>
     </div>`;
   }
