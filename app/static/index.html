@@ -9020,7 +9020,7 @@ document.addEventListener('DOMContentLoaded', () => {
       // ── Phase 7.8: Connection flows (cnctDataIn.dat) ───────────────────────
       const kgCnctMkts = kgViz.cnct_markets || [];
       if (kgCnctMkts.length) {
-        const cnctSample = kgCnctMkts.slice(0, 250); // top 250 connection markets
+        const cnctSample = kgCnctMkts; // all connection markets
         setPhase(`Tracing connection & through flows… [${cnctSample.length} markets]`, 79);
         let cnctAdded = 0;
         for (const cp of cnctSample) {
