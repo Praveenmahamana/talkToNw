@@ -278,6 +278,9 @@ async def kg_viz_data(top_airports: int = 80):
         import csv, os
         from pathlib import Path
         alliances, markets = [], []
+        opp_data: list = []
+        airport_regions: dict = {}
+        cnct_markets: list = []
         _wd = None
         try:
             _data_folder = os.getenv("SCHEDAI_DATA_FOLDER", "")
@@ -325,17 +328,76 @@ async def kg_viz_data(top_airports: int = 80):
             except Exception as exc:
                 logger.warning(f"mktSize.dat parse failed: {exc}")
 
+            # ── opp.dat: airline market share at airports ────────────────────
+            opp_data: list = []
+            try:
+                opp_file = _wd / "data" / "opp.dat"
+                if opp_file.exists():
+                    all_al_set = {a["iata"] for a in airlines}
+                    with open(opp_file, encoding="utf-8-sig") as f:
+                        for line in f:
+                            parts = line.strip().split()
+                            if len(parts) >= 3:
+                                arp, aln = parts[0].strip(), parts[1].strip()
+                                try:
+                                    share = float(parts[2])
+                                except Exception:
+                                    continue
+                                if arp in iata_set and aln in all_al_set and share > 0.05:
+                                    opp_data.append({"arp": arp, "aln": aln, "share": round(share, 4)})
+                    opp_data.sort(key=lambda x: -x["share"])
+                    logger.info(f"kg-viz: loaded {len(opp_data)} airline-airport presence records from opp.dat")
+            except Exception as exc:
+                logger.warning(f"opp.dat parse failed: {exc}")
+
+            # ── regnList.dat: airport→region mapping ────────────────────────
+            airport_regions: dict = {}
+            try:
+                regn_file = _wd / "data" / "regnList.dat"
+                if regn_file.exists():
+                    with open(regn_file, newline="", encoding="utf-8-sig") as f:
+                        for row in csv.DictReader(f):
+                            arp = (row.get("ARPCD") or "").strip()
+                            rgn = (row.get("REGNCD") or "").strip()
+                            if arp in iata_set and rgn:
+                                airport_regions[arp] = rgn
+                    logger.info(f"kg-viz: loaded {len(airport_regions)} airport-region mappings from regnList.dat")
+            except Exception as exc:
+                logger.warning(f"regnList.dat parse failed: {exc}")
+
+            # ── cnctDataIn.dat: connection itinerary O-D pairs ───────────────
+            cnct_markets: list = []
+            try:
+                cnct_file = _wd / "data" / "cnctDataIn.dat"
+                if cnct_file.exists():
+                    seen_cnct: set = set()
+                    with open(cnct_file, encoding="utf-8-sig") as f:
+                        for line in f:
+                            parts = line.strip().split(",")
+                            if len(parts) >= 2:
+                                o, d = parts[0].strip(), parts[1].strip()
+                                key = f"{o}:{d}"
+                                if o in iata_set and d in iata_set and key not in seen_cnct:
+                                    seen_cnct.add(key)
+                                    cnct_markets.append({"o": o, "d": d})
+                    logger.info(f"kg-viz: loaded {len(cnct_markets)} connection markets from cnctDataIn.dat")
+            except Exception as exc:
+                logger.warning(f"cnctDataIn.dat parse failed: {exc}")
+
         return {
-            "airports":       airports,
-            "routes":         routes,
-            "airlines":       airlines,
-            "alliances":      alliances,
-            "markets":        markets,
-            "base_airports":  base_airports,
-            "base_routes":    base_routes,
-            "spill_markets":  spill_markets,
-            "spill_airlines": spill_airlines,
-            "stats":          stats,
+            "airports":        airports,
+            "routes":          routes,
+            "airlines":        airlines,
+            "alliances":       alliances,
+            "markets":         markets,
+            "base_airports":   base_airports,
+            "base_routes":     base_routes,
+            "spill_markets":   spill_markets,
+            "spill_airlines":  spill_airlines,
+            "opp_data":        opp_data,
+            "airport_regions": airport_regions,
+            "cnct_markets":    cnct_markets,
+            "stats":           stats,
         }
 
     except Exception as exc:

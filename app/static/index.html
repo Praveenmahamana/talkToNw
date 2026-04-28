@@ -8672,7 +8672,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const tgt = hubs.length ? hubs[Math.floor(Math.random() * Math.min(3, hubs.length))] : hostNode;
       if (tgt) _gLinks.push({ source: tgt.id, target: id, w: 0.8, color: s.color + '55', _bb: true });
     }
-    if (Graph) Graph.graphData({ nodes: _gNodes, links: _gLinks });
+    // NOTE: do NOT call graphData() here — caller must flush after batch
     return n;
   }
 
@@ -8737,20 +8737,64 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // ── Init ForceGraph3D ──
       setPhase('Initialising 3D knowledge graph engine…', 2);
+
+      // Helper: create floating text sprite for node labels
+      function _makeLabel(text, color) {
+        const c = document.createElement('canvas');
+        c.width = 256; c.height = 52;
+        const cx = c.getContext('2d');
+        cx.font = 'bold 22px monospace';
+        cx.fillStyle = color || '#e2e8f0';
+        cx.textAlign = 'center';
+        cx.shadowColor = '#000'; cx.shadowBlur = 6;
+        cx.fillText(text, 128, 34);
+        const tex = new THREE.CanvasTexture(c);
+        const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
+        const r = Math.cbrt(SCHEMA[text] ? (SCHEMA[text].val || 8) : 8) * 3.5;
+        spr.position.set(0, r + 9, 0);
+        spr.scale.set(48, 11, 1);
+        return spr;
+      }
+
       Graph = ForceGraph3D()(container)
         .width(window.innerWidth)
         .height(window.innerHeight)
         .backgroundColor('#07080f')
         .showNavInfo(false)
-        .enableNavigationControls(false)
         .enablePointerInteraction(false)
         .nodeId('id')
         .nodeLabel(n => `${n.type.toUpperCase()} · ${n.label}`)
         .nodeColor(n => n.color)
         .nodeVal(n => n.val)
-        .nodeOpacity(0.95)
+        .nodeOpacity(0.92)
         .nodeResolution(12)
-        .linkColor(l => l.color || '#3b82f650')
+        .nodeThreeObjectExtend(true)
+        .nodeThreeObject(n => {
+          // Floating label for prominent node types
+          if (!['host','hub','reghub','competitor','alliance'].includes(n.type)) return null;
+          const group = new THREE.Group();
+          // Text label sprite
+          const lbl = _makeLabel(n.label, n.type === 'host' ? '#ffffff' : n.color);
+          group.add(lbl);
+          // Pulsing ring for host
+          if (n.type === 'host') {
+            const ring = new THREE.Mesh(
+              new THREE.TorusGeometry(14, 1.0, 8, 64),
+              new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.7 })
+            );
+            group.add(ring); group._ring = ring;
+          }
+          return group;
+        })
+        .onEngineTick(() => {
+          const hn = _gNodes.find(n => n.type === 'host');
+          if (hn && hn.__threeObj && hn.__threeObj._ring) {
+            const ring = hn.__threeObj._ring;
+            ring.material.opacity = 0.3 + 0.5 * Math.sin(performance.now() / 500);
+            ring.rotation.x += 0.012; ring.rotation.y += 0.007;
+          }
+        })
+        .linkColor(l => l.color || '#3b82f640')
         .linkWidth(l => l.w || 0.3)
         .linkOpacity(0.5)
         .linkCurvature(0.1)
@@ -8761,35 +8805,8 @@ document.addEventListener('DOMContentLoaded', () => {
         .d3VelocityDecay(0.3)
         .graphData({ nodes: _gNodes, links: _gLinks });
 
-      // Host node: pulsing THREE.js ring
-      if (window.THREE) {
-        Graph
-          .nodeThreeObject(n => {
-            if (n.type !== 'host') return null;
-            const group = new THREE.Group();
-            const geo = new THREE.SphereGeometry(9, 32, 32);
-            const mat = new THREE.MeshLambertMaterial({
-              color: new THREE.Color(n.color),
-              emissive: new THREE.Color(n.color), emissiveIntensity: 0.6,
-            });
-            group.add(new THREE.Mesh(geo, mat));
-            const ring = new THREE.Mesh(
-              new THREE.TorusGeometry(15, 0.8, 8, 64),
-              new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.7 })
-            );
-            group.add(ring); group._ring = ring;
-            return group;
-          })
-          .nodeThreeObjectExtend(false)
-          .onEngineTick(() => {
-            const hn = _gNodes.find(n => n.type === 'host');
-            if (hn && hn.__threeObj && hn.__threeObj._ring) {
-              const ring = hn.__threeObj._ring;
-              ring.material.opacity = 0.35 + 0.45 * Math.sin(performance.now() / 500);
-              ring.rotation.x += 0.012; ring.rotation.y += 0.007;
-            }
-          });
-      }
+      // Disable orbit controls for read-only splash view
+      try { if (Graph.controls()) Graph.controls().enabled = false; } catch(_e) {}
 
       window.addEventListener('resize', () => {
         if (Graph) Graph.width(window.innerWidth).height(window.innerHeight);
@@ -8800,14 +8817,14 @@ document.addEventListener('DOMContentLoaded', () => {
       // ── Phase 1: Host ──
       setPhase('Recognising host airline entity…', 5);
       addNodeTracked('host', hostCode, hostCode);
-      flashNER(SCHEMA.host.nerTag, hostCode); updateCounters();
+      flushLinks(); flashNER(SCHEMA.host.nerTag, hostCode); updateCounters();
       await delay(500);
 
       // ── Phase 2: Mega-hubs ──
       setPhase(`Extracting mega-hub airports… [${megaHubs.length} entities]`, 14);
       for (const ap of megaHubs) {
         addNodeTracked('hub', ap, ap);
-        flashNER(SCHEMA.hub.nerTag, ap); updateCounters();
+        flushLinks(); flashNER(SCHEMA.hub.nerTag, ap); updateCounters();
         await delay(160);
       }
 
@@ -8815,18 +8832,21 @@ document.addEventListener('DOMContentLoaded', () => {
       setPhase(`Mapping regional hub airports… [${regHubs.length} entities]`, 26);
       for (let i = 0; i < regHubs.length; i++) {
         addNodeTracked('reghub', regHubs[i], regHubs[i]);
+        if (i % 2 === 1) flushLinks(); // flush every 2 nodes (~150ms)
         if (i % 4 === 0) flashNER(SCHEMA.reghub.nerTag, regHubs[i]);
         updateCounters(); await delay(75);
       }
+      flushLinks();
 
       // ── Phase 4: Stations ──
       setPhase(`Building station network… [${stations.length} entities]`, 40);
-      const BATCH = 5;
+      const BATCH = 8;
       for (let i = 0; i < stations.length; i += BATCH) {
         const chunk = stations.slice(i, i + BATCH);
         chunk.forEach(ap => addNodeTracked('station', ap, ap));
-        if (i % (BATCH * 4) === 0) flashNER(SCHEMA.station.nerTag, chunk[0]);
-        updateCounters(); await delay(55);
+        flushLinks();
+        if (i % (BATCH * 3) === 0) flashNER(SCHEMA.station.nerTag, chunk[0]);
+        updateCounters(); await delay(60);
       }
 
       // ── Phase 5: Route edges (batch → single flush) ──
@@ -8886,11 +8906,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // ── Phase 6: Competitors ──
       setPhase(`Detecting competitor airline entities… [${competitors.length}]`, 68);
-      for (const al of competitors) {
-        addNodeTracked('competitor', al, al);
-        flashNER(SCHEMA.competitor.nerTag, al); updateCounters();
-        await delay(100);
+      for (let i = 0; i < competitors.length; i++) {
+        addNodeTracked('competitor', competitors[i], competitors[i]);
+        if (i % 2 === 1) flushLinks();
+        flashNER(SCHEMA.competitor.nerTag, competitors[i]); updateCounters();
+        await delay(90);
       }
+      flushLinks();
 
       // ── Phase 7: Alliances ──
       const kgAlliances = kgViz.alliances || [];
@@ -8899,10 +8921,29 @@ document.addEventListener('DOMContentLoaded', () => {
         for (const aln of kgAlliances.slice(0, 10)) {
           const aName = aln.name.substring(0, 14);
           addNodeTracked('alliance', aln.name, aName);
+          flushLinks();
           flashNER(SCHEMA.alliance.nerTag, `${aName} (${aln.members.length} carriers)`);
-          updateCounters(); await delay(170);
+          updateCounters(); await delay(160);
         }
-        await delay(150);
+      }
+
+      // ── Phase 7.5: Competitive airport presence (opp.dat) ──
+      const kgOppData = kgViz.opp_data || [];
+      if (kgOppData.length) {
+        setPhase(`Mapping competitive airport presence… [${kgOppData.length} airline-airport pairs]`, 77);
+        let oppEdges = 0;
+        for (const opp of kgOppData) {
+          if (nodeById.has(opp.aln) && nodeById.has(opp.arp)) {
+            _gLinks.push({ source: opp.aln, target: opp.arp, w: Math.max(0.2, opp.share * 1.8), color: '#f59e0b30' });
+            oppEdges++;
+            if (oppEdges % 30 === 0) {
+              flushLinks(); flashNER('OA · PRESENCE', `${opp.aln} @ ${opp.arp} [${(opp.share * 100).toFixed(0)}%]`);
+              await delay(40);
+            }
+          }
+        }
+        flushLinks(); updateCounters();
+        await delay(300);
       }
 
       // ── Phase 8: Equipment ──
@@ -8910,8 +8951,9 @@ document.addEventListener('DOMContentLoaded', () => {
       setPhase(`Cataloguing equipment types… [${eqTypes.length} entities]`, 80);
       for (const eq of eqTypes) {
         addNodeTracked('equipment', eq, eq);
+        flushLinks();
         flashNER(SCHEMA.equipment.nerTag, eq); updateCounters();
-        await delay(100);
+        await delay(90);
       }
 
       // ── Phase 8.5: Spill scan (SPILLDATA) ──
