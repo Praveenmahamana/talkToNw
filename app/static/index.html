@@ -9,6 +9,7 @@
     <script src="/static/d3.min.js"></script>
   <script>const d3Force = d3;</script>
   <script src="/static/d3-sankey.min.js"></script>
+  <script src="/static/3d-force-graph.min.js"></script>
   <script src="/static/marked.min.js"></script>
   <style>
     /* ── Brand Fonts: APK Galeria (primary) + Consolas/Cascadia Code (code) ── */
@@ -1205,7 +1206,7 @@
     background: #070b16; overflow: hidden;
     transition: opacity 0.9s ease;
   }
-  #kg-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #kg-canvas { position: absolute; inset: 0; width: 100%; height: 100%; overflow: hidden; }
 
   /* Subtle scanline overlay */
   #kg-loader::after {
@@ -1334,7 +1335,7 @@
 
 <!-- ── KG Boot Loader ─────────────────────────────────────────────────────────── -->
 <div id="kg-loader">
-  <canvas id="kg-canvas"></canvas>
+  <div id="kg-canvas"></div>
 
   <!-- Top-left: brand -->
   <div id="kg-brand-tl">
@@ -8558,181 +8559,37 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // ── KG Boot Loader ────────────────────────────────────────────────────────────
 (function _kgBootLoader() {
-  const overlay  = document.getElementById('kg-loader');
-  const canvas   = document.getElementById('kg-canvas');
-  if (!overlay || !canvas) return;
+  const overlay   = document.getElementById('kg-loader');
+  const container = document.getElementById('kg-canvas');
+  if (!overlay || !container) return;
 
-  const ctx = canvas.getContext('2d');
-  let W, H;
-  function resize() {
-    W = canvas.width  = window.innerWidth;
-    H = canvas.height = window.innerHeight;
-  }
-  resize();
-  window.addEventListener('resize', resize);
-
-  // ── Entity color/size schema ──
+  // ── Entity schema: color + 3D sphere volume (val) ──
   const SCHEMA = {
-    host:       { color: '#6366f1', r: 26, nerTag: 'AIRLINE · HOST' },
-    hub:        { color: '#22d3ee', r: 16, nerTag: 'AIRPORT · HUB' },
-    reghub:     { color: '#0ea5e9', r: 10, nerTag: 'AIRPORT · REGIONAL HUB' },
-    station:    { color: '#3b82f6', r:  5, nerTag: 'AIRPORT · STATION' },
-    competitor: { color: '#f59e0b', r: 11, nerTag: 'AIRLINE · COMPETITOR' },
-    equipment:  { color: '#f87171', r:  5, nerTag: 'EQUIPMENT · AIRCRAFT' },
-    alliance:   { color: '#60a5fa', r: 13, nerTag: 'ALLIANCE · GROUP' },
+    host:       { color: '#6366f1', val: 220, nerTag: 'AIRLINE · HOST' },
+    hub:        { color: '#22d3ee', val: 55,  nerTag: 'AIRPORT · HUB' },
+    reghub:     { color: '#0ea5e9', val: 18,  nerTag: 'AIRPORT · REGIONAL HUB' },
+    station:    { color: '#3b82f6', val: 5,   nerTag: 'AIRPORT · STATION' },
+    competitor: { color: '#f59e0b', val: 22,  nerTag: 'AIRLINE · COMPETITOR' },
+    equipment:  { color: '#f87171', val: 6,   nerTag: 'EQUIPMENT · AIRCRAFT' },
+    alliance:   { color: '#60a5fa', val: 30,  nerTag: 'ALLIANCE · GROUP' },
   };
 
-  let nodes = [], links = [], sim = null;
+  // ── Graph state ──
+  let _gNodes = [], _gLinks = [];
+  const nodeById = new Map();
+  let Graph = null;
 
-  // ── Draw loop ──
-  function draw() {
-    try {
-      ctx.clearRect(0, 0, W, H);
-      ctx.fillStyle = '#070b16';
-      ctx.fillRect(0, 0, W, H);
+  // ── UI elements ──
+  const nerEl     = document.getElementById('kg-ner-label');
+  const phaseEl   = document.getElementById('kg-phase');
+  const counterEl = document.getElementById('kg-counters');
+  const fillEl    = document.getElementById('kg-progress-fill');
 
-      // subtle dot grid
-      ctx.fillStyle = 'rgba(255,255,255,0.022)';
-      for (let x = 0; x < W; x += 44)
-        for (let y = 0; y < H; y += 44) {
-          ctx.beginPath(); ctx.arc(x, y, 1.1, 0, Math.PI * 2); ctx.fill();
-        }
-
-      // links
-      for (const l of links) {
-        try {
-          const src = l.source, tgt = l.target;
-          const sx = src && src.x, sy = src && src.y, tx = tgt && tgt.x, ty = tgt && tgt.y;
-          if (!isFinite(sx) || !isFinite(sy) || !isFinite(tx) || !isFinite(ty)) continue;
-          const srcColor = (src && src.color) || '#3b82f6';
-          const tgtColor = (tgt && tgt.color) || '#3b82f6';
-          const w = l.w || 0.7;
-          const g = ctx.createLinearGradient(sx, sy, tx, ty);
-          // backbone links (thick) get higher opacity; thin route links are subtle
-          const a0 = w >= 1.2 ? '90' : '40';
-          const a1 = w >= 1.2 ? '55' : '18';
-          g.addColorStop(0, srcColor + a0);
-          g.addColorStop(1, tgtColor + a1);
-          ctx.beginPath();
-          // slight curve for backbone links (force-graph aesthetic)
-          if (w >= 1.0) {
-            const mx = (sx + tx) / 2 + (sy - ty) * 0.08;
-            const my = (sy + ty) / 2 + (tx - sx) * 0.08;
-            ctx.moveTo(sx, sy); ctx.quadraticCurveTo(mx, my, tx, ty);
-          } else {
-            ctx.moveTo(sx, sy); ctx.lineTo(tx, ty);
-          }
-          ctx.strokeStyle = g; ctx.lineWidth = w; ctx.stroke();
-        } catch (_) { /* skip bad link */ }
-      }
-
-      // nodes
-      for (const n of nodes) {
-        try {
-          if (!n.visible || !isFinite(n.x) || !isFinite(n.y)) continue;
-          const r = Math.max(1, (n.r || 6) * (n.scale || 1));
-          const color = n.color || '#3b82f6';
-          const isHost = n.type === 'host';
-
-          // host: pulsing outer ring
-          if (isHost) {
-            const pulse = 0.6 + 0.4 * Math.sin(performance.now() / 500);
-            const pr = r * (3.5 + pulse);
-            const pg = ctx.createRadialGradient(n.x, n.y, r, n.x, n.y, pr);
-            pg.addColorStop(0, color + Math.round(pulse * 180).toString(16).padStart(2,'0'));
-            pg.addColorStop(1, 'transparent');
-            ctx.beginPath(); ctx.arc(n.x, n.y, pr, 0, Math.PI * 2);
-            ctx.fillStyle = pg; ctx.fill();
-            // crisp ring stroke
-            ctx.beginPath(); ctx.arc(n.x, n.y, r * 2.2, 0, Math.PI * 2);
-            ctx.strokeStyle = color + 'cc'; ctx.lineWidth = 2; ctx.stroke();
-          }
-
-          // outer glow (all nodes)
-          const grd = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, r * 3);
-          grd.addColorStop(0, color + (isHost ? 'ff' : 'aa'));
-          grd.addColorStop(0.35, color + '33');
-          grd.addColorStop(1, 'transparent');
-          ctx.beginPath(); ctx.arc(n.x, n.y, r * 3, 0, Math.PI * 2);
-          ctx.fillStyle = grd; ctx.fill();
-          // core
-          ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
-          ctx.fillStyle = color; ctx.fill();
-          // host gets white border, others subtle
-          ctx.strokeStyle = isHost ? '#ffffff' : 'rgba(255,255,255,0.35)';
-          ctx.lineWidth = isHost ? 2 : 0.7; ctx.stroke();
-          // label: always show host; only bigger nodes otherwise
-          if (isHost || r >= 9) {
-            ctx.fillStyle = '#fff';
-            ctx.font = `bold ${isHost ? 13 : Math.min(11, Math.round(r * 0.75))}px Consolas, monospace`;
-            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-            ctx.fillText(n.label, n.x, n.y);
-          }
-        } catch (_) { /* skip bad node */ }
-      }
-    } catch (_) { /* never let draw() crash the D3 rAF loop */ }
-  }
-
-  // ── Add a node with pop-in animation ──
-  function addNode(type, id, label) {
-    const s = SCHEMA[type] || SCHEMA.station;
-    // Place nodes on a random angle, at a radius scaled by canvas size
-    // — spread across the viewport so force physics can organically pull/push
-    const angle  = Math.random() * Math.PI * 2;
-    const minDim = Math.min(W, H);
-    const radii  = { host: 0, hub: 0.2, reghub: 0.28, station: 0.38,
-                     competitor: 0.32, equipment: 0.42, alliance: 0.25 };
-    const rFrac  = (radii[type] || 0.35) + (Math.random() - 0.5) * 0.12;
-    const dist   = Math.max(60, rFrac * minDim);
-    const n = {
-      id, label: label || id, type,
-      color: s.color, r: s.r, nerTag: s.nerTag,
-      visible: true, scale: 0.05,
-      x: W / 2 + Math.cos(angle) * dist,
-      y: H / 2 + Math.sin(angle) * dist,
-    };
-    nodes.push(n);
-
-    // spring scale-in
-    const t0 = performance.now();
-    (function tick(t) {
-      const p = Math.min(1, (t - t0) / 350);
-      n.scale = p < 0.5 ? 2 * p * p : -1 + (4 - 2 * p) * p;
-      if (p < 1) requestAnimationFrame(tick); else n.scale = 1;
-    })(t0);
-
-    // structural backbone links (only for non-route types)
-    const host = nodes.find(n => n.type === 'host');
-    if (type === 'hub' && host)
-      links.push({ source: host, target: n, color: n.color, w: 1.6 });
-    if (type === 'reghub') {
-      const hubs = nodes.filter(n => n.type === 'hub');
-      const target = hubs[Math.floor(Math.random() * hubs.length)] || host;
-      if (target) links.push({ source: n, target, color: n.color, w: 1.0 });
-    }
-    if (type === 'competitor') {
-      const hubs = nodes.filter(n => n.type === 'hub' || n.type === 'reghub');
-      if (hubs.length) links.push({ source: n, target: hubs[Math.floor(Math.random() * hubs.length)], color: n.color, w: 1.0 });
-    }
-    if (type === 'equipment' && host)
-      links.push({ source: n, target: host, color: n.color, w: 0.5 });
-    if (type === 'alliance') {
-      const hubs = nodes.filter(n => n.type === 'hub');
-      if (hubs.length) links.push({ source: n, target: hubs[Math.floor(Math.random() * 3)], color: n.color, w: 0.8 });
-    }
-
-    // just update the data — alphaTarget keeps sim continuously hot
-    if (sim) {
-      sim.nodes(nodes);
-      sim.force('link').links(links);
-      if (!sim.alpha() || sim.alpha() < 0.1) sim.alpha(0.35).restart();
-    }
-    return n;
-  }
-
-  // ── NER label: cyberpunk scramble-then-settle effect ──
-  const nerEl = document.getElementById('kg-ner-label');
+  const SCRAMBLE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%*<>/\\|';
   let _nerTimers = [], _nerTarget = '';
+  let _phaseTimers = [], _phaseTarget = '';
+
+  // ── NER scramble-then-settle ──
   function flashNER(tag, id) {
     if (!nerEl) return;
     _nerTimers.forEach(clearTimeout); _nerTimers.length = 0;
@@ -8740,20 +8597,14 @@ document.addEventListener('DOMContentLoaded', () => {
     _nerTarget = text;
     nerEl.style.opacity = '1';
     let i = 0, sf = 0;
-    const SETTLE_SPEED = 9; // ms per scramble frame; 3 frames + settle = ~36ms/char
     function nerTick() {
       if (_nerTarget !== text) return;
       if (sf < 3 && i < text.length) {
-        // Scramble frame
-        nerEl.textContent = text.slice(0, i) +
-          SCRAMBLE_CHARS[Math.floor(Math.random() * SCRAMBLE_CHARS.length)];
-        sf++;
-        _nerTimers.push(setTimeout(nerTick, SETTLE_SPEED));
+        nerEl.textContent = text.slice(0, i) + SCRAMBLE_CHARS[Math.floor(Math.random() * SCRAMBLE_CHARS.length)];
+        sf++; _nerTimers.push(setTimeout(nerTick, 9));
       } else {
-        // Settle char
-        nerEl.textContent = text.slice(0, ++i);
-        sf = 0;
-        if (i < text.length) _nerTimers.push(setTimeout(nerTick, SETTLE_SPEED));
+        nerEl.textContent = text.slice(0, ++i); sf = 0;
+        if (i < text.length) _nerTimers.push(setTimeout(nerTick, 9));
       }
     }
     nerTick();
@@ -8761,252 +8612,234 @@ document.addEventListener('DOMContentLoaded', () => {
     nerEl._t = setTimeout(() => { nerEl.style.opacity = '0'; }, 1400);
   }
 
-  // ── Phase helpers: fast clean typewriter (always completes ≤300ms) ──
-  const phaseEl   = document.getElementById('kg-phase');
-  const counterEl = document.getElementById('kg-counters');
-  const fillEl    = document.getElementById('kg-progress-fill');
-
-  const SCRAMBLE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%*<>/\\|';
-  let _phaseTimers = [], _phaseTarget = '';
-
+  // ── Phase typewriter ──
   function setPhase(text, pct) {
     if (fillEl) fillEl.style.width = pct + '%';
     if (!phaseEl) return;
-    // Use .length=0 to clear in-place — avoids stale array references in old closures
     _phaseTimers.forEach(clearTimeout); _phaseTimers.length = 0;
     _phaseTarget = text;
     phaseEl.classList.add('kg-typing');
     let i = 0;
-    // Target: complete in ≤280ms regardless of text length (Phase 5 only has ~450ms)
     const speed = Math.max(6, Math.min(20, 280 / Math.max(text.length, 1)));
     function tick() {
       if (_phaseTarget !== text) { phaseEl.classList.remove('kg-typing'); return; }
       phaseEl.textContent = text.slice(0, i++);
-      if (i <= text.length) {
-        _phaseTimers.push(setTimeout(tick, speed));
-      } else {
-        phaseEl.classList.remove('kg-typing');
-      }
+      if (i <= text.length) _phaseTimers.push(setTimeout(tick, speed));
+      else phaseEl.classList.remove('kg-typing');
     }
     tick();
   }
+
   function updateCounters() {
     if (!counterEl) return;
-    const a = nodes.filter(n => n.type === 'host' || n.type === 'competitor').length;
-    const p = nodes.filter(n => n.type === 'hub' || n.type === 'reghub' || n.type === 'station').length;
-    const e = nodes.filter(n => n.type === 'equipment').length;
-    const lk = links.length;
+    const a = _gNodes.filter(n => n.type === 'host' || n.type === 'competitor').length;
+    const p = _gNodes.filter(n => ['hub','reghub','station'].includes(n.type)).length;
+    const e = _gNodes.filter(n => n.type === 'equipment').length;
     counterEl.innerHTML =
       `<span style="color:#818cf8">${a} airlines</span> &nbsp;·&nbsp; ` +
       `<span style="color:#22d3ee">${p} airports</span> &nbsp;·&nbsp; ` +
       `<span style="color:#f87171">${e} equip</span> &nbsp;·&nbsp; ` +
-      `<span style="color:#475569">${lk} edges</span>`;
+      `<span style="color:#475569">${_gLinks.length} edges</span>`;
+  }
+
+  // ── Node management ──
+  function addNodeTracked(type, id, label) {
+    if (nodeById.has(id)) return nodeById.get(id);
+    const s = SCHEMA[type] || SCHEMA.station;
+    const n = { id, label: label || id, type, color: s.color, val: s.val, nerTag: s.nerTag };
+    nodeById.set(id, n);
+    _gNodes.push(n);
+    // Backbone structural links
+    const hostNode = _gNodes.find(n => n.type === 'host');
+    if (type === 'hub' && hostNode) {
+      _gLinks.push({ source: hostNode.id, target: id, w: 2.0, color: s.color + '88', _bb: true });
+    }
+    if (type === 'reghub') {
+      const hubs = _gNodes.filter(n => n.type === 'hub');
+      const tgt = hubs[Math.floor(Math.random() * hubs.length)] || hostNode;
+      if (tgt) _gLinks.push({ source: tgt.id, target: id, w: 1.2, color: s.color + '66', _bb: true });
+    }
+    if (type === 'competitor') {
+      const hubs = _gNodes.filter(n => n.type === 'hub');
+      const tgt = hubs.length ? hubs[Math.floor(Math.random() * Math.min(4, hubs.length))] : hostNode;
+      if (tgt) _gLinks.push({ source: tgt.id, target: id, w: 1.0, color: s.color + '55', _bb: true });
+    }
+    if (type === 'equipment' && hostNode) {
+      _gLinks.push({ source: hostNode.id, target: id, w: 0.4, color: s.color + '44', _bb: true });
+    }
+    if (type === 'alliance') {
+      const hubs = _gNodes.filter(n => n.type === 'hub');
+      const tgt = hubs.length ? hubs[Math.floor(Math.random() * Math.min(3, hubs.length))] : hostNode;
+      if (tgt) _gLinks.push({ source: tgt.id, target: id, w: 0.8, color: s.color + '55', _bb: true });
+    }
+    if (Graph) Graph.graphData({ nodes: _gNodes, links: _gLinks });
+    return n;
+  }
+
+  function addRouteLink(o, d, flights) {
+    if (!nodeById.has(o) || !nodeById.has(d)) return;
+    const w = Math.max(0.15, Math.min(2.5, flights / 700));
+    _gLinks.push({ source: o, target: d, w, color: '#3b82f640' });
+  }
+
+  function flushLinks() {
+    if (Graph) Graph.graphData({ nodes: _gNodes, links: _gLinks });
   }
 
   // ── NER-based persona identification ──
   function identifyPersona(summary, profile, kgVizData) {
     const kgData     = kgVizData || {};
-    const baseRoutes = kgData.base_routes  || [];
+    const baseRoutes = kgData.base_routes   || [];
     const spillMkts  = kgData.spill_markets || [];
-
-    // Aggregate demand/spill metrics from BASEDATA model outputs
     let totalDemand = 0, totalPax = 0, totalSpill = 0;
     for (const r of baseRoutes) {
-      totalDemand += (r.demand || 0);
-      totalPax    += (r.pax    || 0);
-      totalSpill  += (r.spill  || 0);
+      totalDemand += (r.demand || 0); totalPax += (r.pax || 0); totalSpill += (r.spill || 0);
     }
-    const avgLF      = totalDemand > 0 ? totalPax / totalDemand : 0;
-    const spillRate  = totalDemand > 0 ? totalSpill / totalDemand : 0;
+    const avgLF     = totalDemand > 0 ? totalPax / totalDemand : 0;
+    const spillRate = totalDemand > 0 ? totalSpill / totalDemand : 0;
     const highSpillN = spillMkts.filter(m => (m.spill || 0) > 0).length;
-
-    const host        = (profile?.profile?.host_airline || '').toUpperCase();
-    const avgBlock    = summary?.avg_block_min   || 0;
-    const origins     = summary?.origins         || 0;
-    const aircraftN   = summary?.aircraft_types  || 0;
+    const host       = (profile?.profile?.host_airline || '').toUpperCase();
+    const avgBlock   = summary?.avg_block_min  || 0;
+    const origins    = summary?.origins        || 0;
+    const aircraftN  = summary?.aircraft_types || 0;
     const competitors = profile?.profile?.top_competitors || [];
-
     const ULCC_CODES = ['F9','NK','G4','SY','P0','VB','W6','FR','U2','EI'];
-    const LONGHAUL   = avgBlock > 300;
-    const IS_ULCC    = ULCC_CODES.includes(host);
-    const BIG_NET    = origins > 150;
-    const MULTI_AC   = aircraftN > 15;
-    const HIGH_SPILL = spillRate > 0.05 || highSpillN > 10;
-    const HIGH_LF    = avgLF > 0.80;
-
-    if (IS_ULCC && HIGH_SPILL)
-      return { key: 'revenue', icon: '🔥', label: 'Capacity Growth Strategist',       color: '#dc2626' };
-    if (IS_ULCC && BIG_NET)
-      return { key: 'revenue', icon: '🚀', label: 'ULCC Growth Strategist',            color: '#059669' };
-    if (HIGH_LF && highSpillN > 20)
-      return { key: 'revenue', icon: '📈', label: 'Yield Maximization Strategist',     color: '#7c3aed' };
-    if (LONGHAUL && BIG_NET)
-      return { key: 'network', icon: '🌐', label: 'Long-Haul Network Analyst',         color: '#667eea' };
-    if (BIG_NET && MULTI_AC)
-      return { key: 'ops',     icon: '⚙️', label: 'Fleet & Network Optimiser',         color: '#64748b' };
-    if (competitors.length >= 4)
-      return { key: 'alliance',icon: '⚡', label: 'Competitive Intelligence Analyst',  color: '#d97706' };
-    return   { key: 'network', icon: '🗺️', label: 'Network Expansion Analyst',         color: '#667eea' };
+    const IS_ULCC = ULCC_CODES.includes(host);
+    if (IS_ULCC && spillRate > 0.05) return { key:'revenue', icon:'🔥', label:'Capacity Growth Strategist', color:'#dc2626' };
+    if (IS_ULCC && origins > 150)    return { key:'revenue', icon:'🚀', label:'ULCC Growth Strategist',     color:'#059669' };
+    if (avgLF > 0.80 && highSpillN > 20) return { key:'revenue', icon:'📈', label:'Yield Maximization Strategist', color:'#7c3aed' };
+    if (avgBlock > 300 && origins > 150) return { key:'network', icon:'🌐', label:'Long-Haul Network Analyst',     color:'#667eea' };
+    if (origins > 150 && aircraftN > 15) return { key:'ops',     icon:'⚙️', label:'Fleet & Network Optimiser',     color:'#64748b' };
+    if (competitors.length >= 4)         return { key:'alliance', icon:'⚡', label:'Competitive Intelligence Analyst', color:'#d97706' };
+    return { key:'network', icon:'🗺️', label:'Network Expansion Analyst', color:'#667eea' };
   }
 
-  // ── Main sequence ──
+  // ── Main boot sequence ──
   async function run() {
+    const delay = ms => new Promise(r => setTimeout(r, ms));
     try {
-      // Fetch all entity data in parallel — rich dataset from live DB
       const [summary, profile, kgViz] = await Promise.all([
         fetch('/api/v1/schedule/summary').then(r => r.json()).catch(() => ({})),
         fetch('/api/v1/workset/dashboard/profile').then(r => r.json()).catch(() => ({})),
-        fetch('/api/v1/kg-viz').then(r => r.json()).catch(() => ({ airports: [], routes: [], airlines: [] })),
+        fetch('/api/v1/kg-viz').then(r => r.json()).catch(() => ({ airports:[], routes:[], airlines:[] })),
       ]);
-
-      // Store for NER persona builder (kg-ready handler reads this)
       window._kgVizData = kgViz;
 
-      const prof = profile?.profile || {};
+      const prof     = profile?.profile || {};
       const hostCode = (prof.host_airline || 'F9').toUpperCase();
-
-      // ── Classify airports by movement rank ──────────────────────────────
-      // Tier 1 = top 8 (mega-hubs), Tier 2 = 9-25 (regional hubs), rest = stations
       const allAirports = kgViz.airports || [];
-      const megaHubs   = allAirports.slice(0, 8).map(a => a.iata);
-      const regHubs    = allAirports.slice(8, 25).map(a => a.iata);
-      const stations   = allAirports.slice(25).map(a => a.iata);
+      const megaHubs    = allAirports.slice(0,  8).map(a => a.iata);
+      const regHubs     = allAirports.slice(8, 25).map(a => a.iata);
+      const stations    = allAirports.slice(25).map(a => a.iata);
+      const allAirlines = (kgViz.airlines || []).map(a => a.iata);
+      const competitors = allAirlines.filter(a => a !== hostCode);
+      const routeEdges  = kgViz.routes || [];
 
-      // ── Airlines: host + all competitors ────────────────────────────────
-      const allAirlines  = (kgViz.airlines || []).map(a => a.iata);
-      const competitors  = allAirlines.filter(a => a !== hostCode);
+      // ── Init ForceGraph3D ──
+      setPhase('Initialising 3D knowledge graph engine…', 2);
+      Graph = ForceGraph3D()(container)
+        .width(window.innerWidth)
+        .height(window.innerHeight)
+        .backgroundColor('#07080f')
+        .showNavInfo(false)
+        .enableNavigationControls(false)
+        .enablePointerInteraction(false)
+        .nodeId('id')
+        .nodeLabel(n => `${n.type.toUpperCase()} · ${n.label}`)
+        .nodeColor(n => n.color)
+        .nodeVal(n => n.val)
+        .nodeOpacity(0.95)
+        .nodeResolution(12)
+        .linkColor(l => l.color || '#3b82f650')
+        .linkWidth(l => l.w || 0.3)
+        .linkOpacity(0.5)
+        .linkCurvature(0.1)
+        .linkDirectionalParticles(l => (l._bb && l.w >= 1.5) ? 2 : 0)
+        .linkDirectionalParticleWidth(1.2)
+        .linkDirectionalParticleSpeed(0.004)
+        .d3AlphaDecay(0.008)
+        .d3VelocityDecay(0.3)
+        .graphData({ nodes: _gNodes, links: _gLinks });
 
-      // ── Route edges: top-160 O-D pairs → link between already-added nodes ─
-      const routeEdges = kgViz.routes || [];
-
-      // Build a node lookup map
-      const nodeById = new Map();
-
-      // Init D3 force simulation — continuous alphaTarget during boot
-      sim = d3Force.forceSimulation([])
-        .alphaDecay(0.015)      // slow cool = longer living physics
-        .alphaTarget(0.35)      // stay hot throughout the boot animation
-        .velocityDecay(0.28)    // low friction = organic, bouncy movement
-        .force('link', d3Force.forceLink([])
-          .id(d => d.id)
-          .distance(d => {
-            const tt = d.target?.type || '', st = d.source?.type || '';
-            if (tt === 'host' || st === 'host')     return 220;
-            if (tt === 'hub'  || st === 'hub')      return 160;
-            if (tt === 'reghub' || st === 'reghub') return 110;
-            if (tt === 'competitor')                 return 170;
-            return 55;   // station O-D route links
+      // Host node: pulsing THREE.js ring
+      if (window.THREE) {
+        Graph
+          .nodeThreeObject(n => {
+            if (n.type !== 'host') return null;
+            const group = new THREE.Group();
+            const geo = new THREE.SphereGeometry(9, 32, 32);
+            const mat = new THREE.MeshLambertMaterial({
+              color: new THREE.Color(n.color),
+              emissive: new THREE.Color(n.color), emissiveIntensity: 0.6,
+            });
+            group.add(new THREE.Mesh(geo, mat));
+            const ring = new THREE.Mesh(
+              new THREE.TorusGeometry(15, 0.8, 8, 64),
+              new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.7 })
+            );
+            group.add(ring); group._ring = ring;
+            return group;
           })
-          .strength(d => {
-            const tt = d.target?.type || '';
-            if (tt === 'host' || tt === 'hub') return 0.8;
-            if (tt === 'reghub' || tt === 'competitor') return 0.55;
-            return 0.25;  // many route links — keep weak or they dominate
-          })
-        )
-        .force('charge', d3Force.forceManyBody()
-          .strength(n => {
-            if (n.type === 'host')       return -1400;
-            if (n.type === 'hub')        return -500;
-            if (n.type === 'reghub')     return -220;
-            if (n.type === 'competitor') return -280;
-            if (n.type === 'alliance')   return -300;
-            return -90;
-          })
-          .distanceMax(Math.min(W, H) * 0.65)  // limit range for perf
-        )
-        .force('center', d3Force.forceCenter(W / 2, H / 2).strength(0.03))
-        .force('x', d3Force.forceX(W / 2).strength(0.02))
-        .force('y', d3Force.forceY(H / 2).strength(0.02))
-        .force('collision', d3Force.forceCollide(d => (d.r || 6) * 2 + 4).strength(0.7))
-        .on('tick', draw);
-
-      const delay = ms => new Promise(r => setTimeout(r, ms));
-
-      // Helper to add a node and register in lookup
-      function addNodeTracked(type, id, label) {
-        if (nodeById.has(id)) return nodeById.get(id);
-        const n = addNode(type, id, label);
-        nodeById.set(id, n);
-        return n;
+          .nodeThreeObjectExtend(false)
+          .onEngineTick(() => {
+            const hn = _gNodes.find(n => n.type === 'host');
+            if (hn && hn.__threeObj && hn.__threeObj._ring) {
+              const ring = hn.__threeObj._ring;
+              ring.material.opacity = 0.35 + 0.45 * Math.sin(performance.now() / 500);
+              ring.rotation.x += 0.012; ring.rotation.y += 0.007;
+            }
+          });
       }
 
-      // Helper to add a route link between two already-added nodes
-      function addRouteLink(orig, dest, flights) {
-        const s = nodeById.get(orig), t = nodeById.get(dest);
-        if (!s || !t) return;
-        const w = Math.max(0.2, Math.min(2.8, flights / 600));
-        links.push({ source: s, target: t, color: s.color, w });
-      }
+      window.addEventListener('resize', () => {
+        if (Graph) Graph.width(window.innerWidth).height(window.innerHeight);
+      });
 
-      // Flush all accumulated route links into simulation at once
-      function flushLinks() {
-        if (sim) {
-          sim.force('link').links(links);
-          // just bump alpha a bit — alphaTarget keeps the sim warm anyway
-          if (sim.alpha() < 0.2) sim.alpha(0.25).restart();
-        }
-      }
+      await delay(300);
 
-      // Nudge sim if it has cooled — keeps the canvas drawing during static phases
-      function keepSimAlive() {
-        if (sim && sim.alpha() < 0.1) sim.alpha(0.2).restart();
-      }
-
-      // ── Phase 1: Host airline node ──────────────────────────────────────
+      // ── Phase 1: Host ──
       setPhase('Recognising host airline entity…', 5);
       addNodeTracked('host', hostCode, hostCode);
       flashNER(SCHEMA.host.nerTag, hostCode); updateCounters();
       await delay(500);
 
-      // ── Phase 2: Mega-hub airports ──────────────────────────────────────
+      // ── Phase 2: Mega-hubs ──
       setPhase(`Extracting mega-hub airports… [${megaHubs.length} entities]`, 14);
       for (const ap of megaHubs) {
         addNodeTracked('hub', ap, ap);
         flashNER(SCHEMA.hub.nerTag, ap); updateCounters();
-        await delay(170);
+        await delay(160);
       }
 
-      // ── Phase 3: Regional hub airports (batch adds, faster) ─────────────
+      // ── Phase 3: Regional hubs ──
       setPhase(`Mapping regional hub airports… [${regHubs.length} entities]`, 26);
-      for (const ap of regHubs) {
-        addNodeTracked('reghub', ap, ap);
-        // Flash NER every 4th node to avoid flickering
-        if (regHubs.indexOf(ap) % 4 === 0) flashNER('AIRPORT · REGIONAL HUB', ap);
-        updateCounters();
-        await delay(80);
+      for (let i = 0; i < regHubs.length; i++) {
+        addNodeTracked('reghub', regHubs[i], regHubs[i]);
+        if (i % 4 === 0) flashNER(SCHEMA.reghub.nerTag, regHubs[i]);
+        updateCounters(); await delay(75);
       }
 
-      // ── Phase 4: Station airports (batch, very fast) ─────────────────────
+      // ── Phase 4: Stations ──
       setPhase(`Building station network… [${stations.length} entities]`, 40);
-      const BATCH = 4;
+      const BATCH = 5;
       for (let i = 0; i < stations.length; i += BATCH) {
         const chunk = stations.slice(i, i + BATCH);
         chunk.forEach(ap => addNodeTracked('station', ap, ap));
-        if (i % (BATCH * 5) === 0) flashNER(SCHEMA.station.nerTag, chunk[0]);
-        updateCounters();
+        if (i % (BATCH * 4) === 0) flashNER(SCHEMA.station.nerTag, chunk[0]);
+        updateCounters(); await delay(55);
+      }
+
+      // ── Phase 5: Route edges (batch → single flush) ──
+      setPhase(`Wiring route graph… [${routeEdges.length} real routes]`, 54);
+      for (const rt of routeEdges) addRouteLink(rt.o, rt.d, rt.flights);
+      // Flash a few sample routes
+      for (let i = 0; i < Math.min(8, routeEdges.length); i += 1) {
+        flashNER('ROUTE · O-D PAIR', `${routeEdges[i*Math.floor(routeEdges.length/8)].o} → ${routeEdges[i*Math.floor(routeEdges.length/8)].d}`);
         await delay(60);
       }
+      flushLinks(); updateCounters(); await delay(200);
 
-      // ── Phase 5: Add ALL real route edges ───────────────────────────────
-      setPhase(`Wiring route graph… [${routeEdges.length} real routes]`, 54);
-      const EDGE_BATCH = 12; // add multiple edges per animation frame
-      for (let i = 0; i < routeEdges.length; i += EDGE_BATCH) {
-        const chunk = routeEdges.slice(i, i + EDGE_BATCH);
-        chunk.forEach(rt => addRouteLink(rt.o, rt.d, rt.flights));
-        if (i % 120 === 0) {
-          const rt = chunk[0];
-          flashNER('ROUTE · O-D PAIR', `${rt.o} → ${rt.d}`);
-          updateCounters();
-          keepSimAlive();
-          await delay(18);
-        }
-      }
-      flushLinks(); // single sim update after all edges added
-      updateCounters();
-      await delay(200);
-
-      // ── Phase 5.5: Demand calibration from BASEDATA ──────────────────────
+      // ── Phase 5.5: Demand calibration (BASEDATA) ──
       const kgBaseRoutes = kgViz.base_routes || [];
       if (kgBaseRoutes.length) {
         setPhase(`Calibrating demand flows… [${kgBaseRoutes.length} O-D demand records]`, 57);
@@ -9014,14 +8847,13 @@ document.addEventListener('DOMContentLoaded', () => {
         let totalWeeklyDemand = 0, maxDemand = 0;
         for (const r of kgBaseRoutes) {
           demandMap.set(r.o + '→' + r.d, r);
-          demandMap.set(r.d + '→' + r.o, r); // bi-directional lookup
+          demandMap.set(r.d + '→' + r.o, r);
           totalWeeklyDemand += (r.demand || 0);
           if ((r.demand || 0) > maxDemand) maxDemand = r.demand;
         }
         if (maxDemand > 0) {
           const logMax = Math.log(1 + maxDemand);
-          // O(n) — build link map first, then do one pass
-          for (const l of links) {
+          for (const l of _gLinks) {
             const sid = typeof l.source === 'object' ? l.source.id : l.source;
             const tid = typeof l.target === 'object' ? l.target.id : l.target;
             const d = demandMap.get(sid + '→' + tid);
@@ -9035,31 +8867,32 @@ document.addEventListener('DOMContentLoaded', () => {
         for (const rt of kgBaseRoutes.slice(0, 5)) {
           const lf = rt.lf ? ` · ${(rt.lf * 100).toFixed(0)}% LF` : '';
           flashNER('DEMAND · FLOW', `${rt.o}→${rt.d} [${(rt.demand || 0).toLocaleString()} pax/wk${lf}]`);
-          keepSimAlive();
-          await delay(260);
+          await delay(240);
         }
         const demK = (totalWeeklyDemand / 1000).toFixed(0);
         if (counterEl) {
-          const a = nodes.filter(n => n.type === 'host' || n.type === 'competitor').length;
-          const p = nodes.filter(n => ['hub','reghub','station'].includes(n.type)).length;
-          const e = nodes.filter(n => n.type === 'equipment').length;
+          const a = _gNodes.filter(n => n.type === 'host' || n.type === 'competitor').length;
+          const p = _gNodes.filter(n => ['hub','reghub','station'].includes(n.type)).length;
+          const e = _gNodes.filter(n => n.type === 'equipment').length;
           counterEl.innerHTML =
             `<span style="color:#818cf8">${a} airlines</span> &nbsp;·&nbsp; ` +
             `<span style="color:#22d3ee">${p} airports</span> &nbsp;·&nbsp; ` +
             `<span style="color:#f87171">${e} equip</span> &nbsp;·&nbsp; ` +
-            `<span style="color:#475569">${links.length} edges</span> &nbsp;·&nbsp; ` +
+            `<span style="color:#475569">${_gLinks.length} edges</span> &nbsp;·&nbsp; ` +
             `<span style="color:#10b981">Σ${demK}K pax/wk</span>`;
         }
         await delay(200);
       }
+
+      // ── Phase 6: Competitors ──
       setPhase(`Detecting competitor airline entities… [${competitors.length}]`, 68);
       for (const al of competitors) {
         addNodeTracked('competitor', al, al);
         flashNER(SCHEMA.competitor.nerTag, al); updateCounters();
-        await delay(120);
+        await delay(100);
       }
 
-      // ── Phase 7: Alliance groupings from workset (alliance.dat) ───────────
+      // ── Phase 7: Alliances ──
       const kgAlliances = kgViz.alliances || [];
       if (kgAlliances.length) {
         setPhase(`Detecting alliance groupings… [${kgAlliances.length} groups]`, 74);
@@ -9067,51 +8900,48 @@ document.addEventListener('DOMContentLoaded', () => {
           const aName = aln.name.substring(0, 14);
           addNodeTracked('alliance', aln.name, aName);
           flashNER(SCHEMA.alliance.nerTag, `${aName} (${aln.members.length} carriers)`);
-          updateCounters();
-          await delay(180);
+          updateCounters(); await delay(170);
         }
-        await delay(200);
+        await delay(150);
       }
 
-      // ── Phase 8: Equipment (static well-known types) ─────────────────────
-      const eqTypes = ['A320', 'A321', 'A319', '737', 'A220', 'E175', 'CRJ9', '787', '777'];
+      // ── Phase 8: Equipment ──
+      const eqTypes = ['A320','A321','A319','737','A220','E175','CRJ9','787','777'];
       setPhase(`Cataloguing equipment types… [${eqTypes.length} entities]`, 80);
       for (const eq of eqTypes) {
         addNodeTracked('equipment', eq, eq);
         flashNER(SCHEMA.equipment.nerTag, eq); updateCounters();
-        await delay(110);
+        await delay(100);
       }
 
-      // ── Phase 8.5: Capacity pressure scan from SPILLDATA ────────────────
+      // ── Phase 8.5: Spill scan (SPILLDATA) ──
       const kgSpillMkts = kgViz.spill_markets || [];
       const highSpillRoutes = kgSpillMkts.filter(m => (m.spill || 0) > 0).slice(0, 8);
       if (highSpillRoutes.length) {
         setPhase(`Scanning capacity constraints… [${highSpillRoutes.length} constrained markets]`, 85);
-        // Build O(1) link lookup map — avoid O(n²) inner loop
         const spillLinkMap = new Map();
-        for (const l of links) {
+        for (const l of _gLinks) {
           const ls = typeof l.source === 'object' ? l.source.id : l.source;
           const lt = typeof l.target === 'object' ? l.target.id : l.target;
-          spillLinkMap.set(ls + '→' + lt, l);
-          spillLinkMap.set(lt + '→' + ls, l);
+          spillLinkMap.set(ls + '→' + lt, l); spillLinkMap.set(lt + '→' + ls, l);
         }
         for (const mkt of highSpillRoutes) {
           const l = spillLinkMap.get(mkt.o + '→' + mkt.d);
           if (l) { l._high_spill = true; l._spill_pax = mkt.spill; }
           flashNER('CAPACITY · CONSTRAINT', `${mkt.o}→${mkt.d} [${(mkt.spill || 0).toLocaleString()} spilled pax]`);
-          keepSimAlive();
-          await delay(180);
+          await delay(170);
         }
+        // Re-apply particle animation on high-spill links
+        if (Graph) Graph.linkDirectionalParticles(l => (l._high_spill || (l._bb && l.w >= 1.5)) ? 2 : 0);
         await delay(300);
       }
 
-      // ── Phase 9: KG resolve + settle ────────────────────────────────────
+      // ── Phase 9: Resolve ──
       setPhase('Resolving knowledge graph topology…', 90);
-      await delay(1000);
+      await delay(900);
 
-      // ── Phase 9: Persona identification via NER signals ─────────────────
       setPhase('Identifying analyst persona via NER…', 96);
-      await delay(600);
+      await delay(500);
 
       const persona = identifyPersona(summary, profile, kgViz);
       const iconEl  = document.getElementById('kg-persona-icon');
@@ -9125,22 +8955,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
       await delay(1800);
 
-      // Cool sim naturally before hand-off — alphaTarget(0) lets it settle
-      sim.alphaTarget(0);
-      // Fade out and hand off to dashboard
-      overlay.style.opacity = '0';
-      sim.stop();
-      // Snapshot boot KG for Brain tab replay (done before GC'd)
-      window._kgBootNodes = nodes.map(n => ({
+      // Snapshot for Brain tab (project 3D → 2D)
+      window._kgBootNodes = _gNodes.map(n => ({
         id: n.id, label: n.label, type: n.type || 'station',
-        color: n.color || '#3b82f6', r: n.r || 5,
+        color: n.color || '#3b82f6', r: Math.sqrt((n.val || 1)) * 2.5,
         x: n.x || 0, y: n.y || 0,
       }));
-      window._kgBootLinks = links.map(l => ({
+      window._kgBootLinks = _gLinks.map(l => ({
         source: typeof l.source === 'object' ? l.source.id : l.source,
         target: typeof l.target === 'object' ? l.target.id : l.target,
         w: l.w || 1,
       }));
+
+      overlay.style.opacity = '0';
+      if (Graph) Graph.pauseAnimation();
       await delay(950);
       overlay.style.display = 'none';
       window.dispatchEvent(new CustomEvent('kg-ready', { detail: persona }));
