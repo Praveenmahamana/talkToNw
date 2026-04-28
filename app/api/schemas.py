@@ -28,6 +28,7 @@ class HealthResponse(BaseModel):
     status:        str
     db_flight_count: int
     vertex_ai:     bool
+    model:         str = ""
     version:       str = "1.0.0"
 
 
@@ -36,7 +37,8 @@ class HealthResponse(BaseModel):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class IngestRequest(BaseModel):
-    folder_path: str = Field(..., description="Absolute path to folder containing schedule files")
+    folder_path: str  = Field(..., description="Absolute path to folder containing schedule files")
+    clear:       bool = Field(default=False, description="If true, delete ALL existing flights before ingesting (clean workset switch)")
 
 
 class IngestResponse(BaseModel):
@@ -56,6 +58,7 @@ class QueryRequest(BaseModel):
     max_results:   int = Field(default=20, ge=1, le=200)
     session_id:    Optional[str] = Field(None, description="Session ID to continue a conversation thread. Omit to start a new thread.")
     persona:       Optional[str] = Field(None, description="Active user persona key (route|network|ops|revenue|alliance) to tailor response style.")
+    panel_context: Optional[str] = Field(None, description="Pre-aggregated panel KPI summary string from the dashboard to help LM cross-validate answers.")
 
 
 class QueryResponse(BaseModel):
@@ -71,14 +74,27 @@ class QueryResponse(BaseModel):
 
 
 class SuggestRequest(BaseModel):
-    query:    str            = Field(..., description="The user's last question")
-    answer:   str            = Field(..., description="The AI's answer (will be truncated server-side)")
-    persona:  Optional[str]  = Field(None, description="Active persona key")
-    entities: List[str]      = Field(default_factory=list, description="IATA codes or entity names mentioned")
+    query:           str            = Field(..., description="The user's last question")
+    answer:          str            = Field(..., description="The AI's answer (will be truncated server-side)")
+    persona:         Optional[str]  = Field(None, description="Active persona key")
+    entities:        List[str]      = Field(default_factory=list, description="IATA codes or entity names mentioned")
+    workset_context: Optional[str]  = Field(None, description="Brief workset context (host airline, top airports) for question relevance")
 
 
 class SuggestResponse(BaseModel):
     questions: List[str] = Field(default_factory=list)
+
+
+class ChartSuggestRequest(BaseModel):
+    query:   str        = Field(..., description="The user's natural language query")
+    answer:  str        = Field(..., description="The AI answer text (summary context)")
+    columns: List[str]  = Field(default_factory=list, description="Column names from the result data")
+    rows:    List[Dict] = Field(default_factory=list, description="Data rows (up to 40)")
+
+
+class ChartSuggestResponse(BaseModel):
+    spec: Optional[Dict] = None   # chart spec chosen by AI
+    error: Optional[str] = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────

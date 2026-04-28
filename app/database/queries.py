@@ -246,6 +246,16 @@ def get_daily_flight_count(airline: Optional[str] = None) -> pd.DataFrame:
 # Write helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+def clear_flights() -> int:
+    """Delete ALL flight records from the DB. Returns the count of deleted rows."""
+    from app.database.db import get_connection
+    conn = get_connection()
+    count = conn.execute("SELECT COUNT(*) FROM flights").fetchone()[0]
+    conn.execute("DELETE FROM flights")
+    logger.info(f"clear_flights: removed {count} existing flight records.")
+    return count
+
+
 def upsert_flights(df: pd.DataFrame) -> int:
     """
     Insert-or-replace flights from a DataFrame.

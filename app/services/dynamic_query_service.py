@@ -208,60 +208,102 @@ TABLE_CATALOGUE: Dict[str, Dict[str, Any]] = {
     },
     "workset_spill": {
         "description": (
-            "SABRE simulation data: per-flight per-day demand, spill, recapture, market share. "
-            "4,658,296 rows. Join to flights on (origin, dest, dep_time/airline)."
+            "SABRE SPILLDATA: market/itinerary level predicted demand. "
+            "Each row = ONE ITINERARY option for a true passenger O&D market. "
+            "4-segment demand model (HO/LO/HR/LR yield segments). "
+            "Use market_origin/market_dest for the true O&D pair (NOT leg endpoints). "
+            "Join to workset_base via baseIndex_l1/l2/l3 to reconstruct leg sequences. "
+            "NOTE: Revenue data is NOT available — fare columns are relative indices only."
         ),
         "columns": {
-            "origin":       "VARCHAR — 3-letter IATA origin",
-            "dest":         "VARCHAR — 3-letter IATA destination",
-            "dep_time":     "INTEGER — departure time as HHMM integer (e.g. 835 = 08:35)",
-            "day_of_week":  "INTEGER — 0=Mon … 6=Sun  (NOTE: 0-based, unlike flights table which is 1-based)",
-            "cap_total":    "INTEGER — total seat capacity",
-            "cap_biz":      "INTEGER — business class seats",
-            "lf_pax":       "DOUBLE  — demand load (local demand units)",
-            "spill_pax":    "DOUBLE  — passengers spilled (could not board due to capacity)",
-            "spill_rev":    "DOUBLE  — revenue spilled",
-            "recap_pax":    "DOUBLE  — spilled passengers recaptured on other flights",
-            "recap_rev":    "DOUBLE  — revenue recaptured",
-            "total_lf_pax": "DOUBLE  — total system load factor (pax)",
-            "mkt_share":    "DOUBLE  — this airline's market share on the route (fraction 0-1, sums to 1.0 per route)",
-            "airline":      "VARCHAR — 2-letter IATA code",
-            "is_codeshare": "INTEGER — 0=operating carrier, 1=codeshare",
-            "flight_id":    "VARCHAR — flight identifier",
-            "service_type": "VARCHAR — service type (YA=economy sched, YC=economy charter, etc.)",
-            "block_time":   "INTEGER — block time in minutes",
-            "stops":        "INTEGER — number of intermediate stops",
+            "market_origin":  "VARCHAR — true passenger origin airport (market O&D level)",
+            "market_dest":    "VARCHAR — true passenger destination airport (market O&D level)",
+            "dep_time":       "VARCHAR — departure time of first leg (HHMM string)",
+            "day_of_week":    "INTEGER — 0=Mon … 6=Sun (0-based)",
+            "dmd_HO":         "DOUBLE  — demand for High-yield Outbound segment",
+            "dmd_LO":         "DOUBLE  — demand for Low-yield Outbound segment",
+            "dmd_HR":         "DOUBLE  — demand for High-yield Return segment",
+            "dmd_LR":         "DOUBLE  — demand for Low-yield Return segment",
+            "spill_HO":       "DOUBLE  — spill for HO segment",
+            "spill_LO":       "DOUBLE  — spill for LO segment",
+            "spill_HR":       "DOUBLE  — spill for HR segment",
+            "spill_LR":       "DOUBLE  — spill for LR segment",
+            "traffic_HO":     "DOUBLE  — booked pax for HO segment",
+            "traffic_LO":     "DOUBLE  — booked pax for LO segment",
+            "traffic_HR":     "DOUBLE  — booked pax for HR segment",
+            "traffic_LR":     "DOUBLE  — booked pax for LR segment",
+            "total_demand":   "DOUBLE  — total demand across all 4 segments (dmd_HO+dmd_LO+dmd_HR+dmd_LR)",
+            "total_pax":      "DOUBLE  — total booked pax across all 4 segments (use this for traffic)",
+            "total_spill":    "DOUBLE  — total spill across all 4 segments",
+            "jet_type":       "VARCHAR — aircraft type indicator (N=narrow, W=wide, R=regional)",
+            "block_time":     "INTEGER — total itinerary elapsed time (minutes)",
+            "stops":          "INTEGER — 0=nonstop (1 leg), 1=one-stop (2 legs), 2=two-stop (3 legs)",
+            "mkt_share":      "DOUBLE  — this airline's market share fraction on the O&D (0-1); multiply by 100 for %",
+            "airline":        "VARCHAR — 2-letter IATA code of marketing carrier",
+            "is_codeshare":   "INTEGER — 0=operating carrier, 1=codeshare/interline",
+            "baseIndex_l1":   "BIGINT  — BASEDATA record_id (workset_base.record_id) of leg 1",
+            "baseIndex_l2":   "BIGINT  — BASEDATA record_id of leg 2 (0 if nonstop)",
+            "baseIndex_l3":   "BIGINT  — BASEDATA record_id of leg 3 (0 if ≤1-stop)",
         },
         "notes": (
-            "day_of_week is 0=Mon..6=Sun (subtract 1 from flights.day_of_operation to match). "
-            "mkt_share sums to exactly 1.0 per (origin, dest) across operating carriers. "
-            "cap_total=0 for codeshare rows — use only operating rows (is_codeshare=0) for capacity analysis."
+            "CRITICAL: market_origin/market_dest = true O&D, NOT leg endpoints. "
+            "stops=0 → nonstop (1 leg via baseIndex_l1). "
+            "stops=1 → one-stop connecting (2 legs via baseIndex_l1 + baseIndex_l2). "
+            "Use total_pax for booked passengers, total_demand for demand (includes unmet demand). "
+            "Revenue is NOT available in SPILLDATA — do not attempt revenue calculations. "
+            "For market share: AVG(mkt_share)*100 or SUM(mkt_share)/COUNT(*)*100. "
+            "To find all itineraries using a specific leg: "
+            "WHERE baseIndex_l1=X OR baseIndex_l2=X OR baseIndex_l3=X. "
+            "To get leg details: JOIN workset_base ON workset_base.record_id = baseIndex_l1."
         ),
     },
     "workset_base": {
         "description": (
-            "SABRE BASEDATA: per-flight capacity, demand, distance, yield. "
-            "1,665,502 rows. Covers all scheduled flights in the season."
+            "SABRE BASEDATA: leg-level APM model predictions (primary operating carrier rows only). "
+            "Each row = ONE LEG (single flight segment) on ONE day of week. "
+            "mkt_ind<=1 filter already applied — no codeshare/thru duplicates. "
+            "ALL metrics are MODEL PREDICTIONS, not actuals. "
+            "record_id (baseIndex) uniquely identifies each leg instance."
         ),
         "columns": {
-            "origin":       "VARCHAR — IATA origin",
-            "dest":         "VARCHAR — IATA destination",
-            "flight_num":   "VARCHAR — flight number",
-            "dep_time":     "INTEGER — HHMM integer",
-            "arr_time":     "INTEGER — HHMM integer",
-            "block_time":   "INTEGER — minutes",
-            "distance_mi":  "DOUBLE  — great-circle distance in miles",
-            "op_airline":   "VARCHAR — operating airline code",
+            "record_id":    "BIGINT  — unique leg identifier (baseIndex), used to join with workset_spill",
+            "origin":       "VARCHAR — IATA departure airport (LEG origin, not market origin)",
+            "dest":         "VARCHAR — IATA arrival airport (LEG destination, not market destination)",
+            "flight_num":   "VARCHAR — flight number (e.g. '777', '4948')",
+            "dep_time":     "VARCHAR — departure time as HHMM string",
+            "arr_time":     "VARCHAR — arrival time as HHMM string",
+            "block_time":   "INTEGER — block time in minutes",
+            "distance_mi":  "INTEGER — great-circle distance in miles",
+            "mkt_airline":  "VARCHAR — MARKETING airline IATA code (ticket-issuing carrier; use for flight designator)",
+            "op_airline":   "VARCHAR — OPERATING airline IATA code (physically operates the aircraft)",
             "aircraft_type":"VARCHAR — IATA aircraft type code",
-            "cap_total":    "INTEGER — total seats",
-            "booked_pax":   "DOUBLE  — booked passengers (SABRE model)",
-            "demand_pax":   "DOUBLE  — unconstrained demand (SABRE model)",
-            "spill_pax":    "DOUBLE  — spilled passengers",
-            "day_of_week":  "INTEGER — 0=Mon..6=Sun",
-            "stops":        "INTEGER — number of stops",
-            "mct_dep":      "INTEGER — minimum connect time at departure (minutes)",
-            "mct_arr":      "INTEGER — minimum connect time at arrival (minutes)",
+            "apm_cap":      "INTEGER — predicted seat capacity",
+            "apm_dmd":      "DOUBLE  — predicted DEMAND per departure (≥ apm_pax when constrained)",
+            "apm_pax":      "DOUBLE  — predicted TRAFFIC (passengers on board) per departure (local + flow)",
+            "apm_lpax":     "DOUBLE  — predicted LOCAL-only passengers (single-leg journey) per departure",
+            "apm_spill":    "DOUBLE  — predicted spilled passengers (unmet demand) per departure",
+            "day_of_week":  "INTEGER — 0=Mon..6=Sun (0-based)",
+            "mkt_ind":      "INTEGER — dedup flag: 0-1=primary row (already filtered), 2+=duplicates (excluded)",
+            "dept_offset":  "INTEGER — UTC timezone offset at departure airport (minutes)",
+            "arrv_offset":  "INTEGER — UTC timezone offset at arrival airport (minutes)",
         },
+        "notes": (
+            "CRITICAL: apm_dmd=demand (total market want), apm_pax=traffic (who boarded). "
+            "apm_dmd >= apm_pax for constrained flights; both equal for unconstrained. "
+            "apm_lpax = passengers whose ENTIRE journey is this single leg (local itin). "
+            "Flow pax (predicted) = apm_pax - apm_lpax (passengers connecting via this leg). "
+            "Load factor = SUM(apm_pax) / SUM(apm_cap) * 100 (aggregate first, then divide). "
+            "Revenue data is NOT available in BASEDATA. "
+            "To identify a flight: mkt_airline + flight_num (e.g. mkt_airline='AA' AND flight_num='100'). "
+            "For leg uniqueness: each (origin, dest, mkt_airline, flight_num, day_of_week) combination is a unique leg. "
+            "record_id is the baseIndex linking to workset_spill.baseIndex_l1/l2/l3. "
+            "⚠ AGGREGATION RULE: workset_base has ONE ROW PER day_of_week per flight leg (e.g. a daily flight = 7 rows). "
+            "To get PER-DEPARTURE metrics: SUM(apm_pax) / COUNT(DISTINCT day_of_week) or AVG(apm_pax). "
+            "To get WEEKLY TOTALS: SUM(apm_pax) directly. "
+            "The dashboard Flight View shows PER-DEPARTURE values. Always normalize by day count when comparing to the dashboard. "
+            "workset_spill.day_of_week / workset_base.day_of_week: 0=Mon..6=Sun  "
+            "Example: AVG daily pax = SUM(apm_pax)/COUNT(DISTINCT day_of_week) — NOT raw SUM."
+        ),
     },
     "workset_mkt": {
         "description": (
@@ -294,6 +336,91 @@ TABLE_CATALOGUE: Dict[str, Dict[str, Any]] = {
             "adjust_pool":   "DOUBLE  — recapture pool adjustment factor",
         },
     },
+    # ── Pre-aggregated dashboard tables (exact match with what tabs display) ───
+    "dm_flight_report": {
+        "description": (
+            "Pre-aggregated FLIGHT VIEW dashboard table — EXACTLY what the Flight View tab shows. "
+            "One row per unique flight (mkt_airline + flight_num + Dept Sta + Arvl Sta). "
+            "All values are per-departure averages — use this table FIRST for flight-level queries."
+        ),
+        "columns": {
+            "Flt Desg":          "VARCHAR — flight designator e.g. '6E  4948' (airline + space + flight_num)",
+            "Dept Sta":          "VARCHAR — departure airport IATA code",
+            "Arvl Sta":          "VARCHAR — arrival airport IATA code",
+            "Freq":              "VARCHAR — operating days string e.g. '1.3.5..' (1=Mon..7=Sun dot=not operating)",
+            "Dept Time":         "VARCHAR — departure time as HHMM string",
+            "Arvl Time":         "VARCHAR — arrival time as HHMM string",
+            "Elap Time":         "VARCHAR — elapsed block time formatted as HH:MM",
+            "Subfleet":          "VARCHAR — IATA aircraft type code",
+            "Seats":             "VARCHAR — seat capacity",
+            "Distance(km)":      "VARCHAR — great-circle distance in kilometres",
+            "Total Demand":      "VARCHAR — per-departure demand (matches Flight View 'Total Demand')",
+            "Total Traffic":     "VARCHAR — per-departure total pax (matches Flight View 'Total Traffic')",
+            "Lcl Demand (Mktd)": "VARCHAR — per-departure local/point-to-point pax",
+            "Lcl Traffic":       "VARCHAR — per-departure local traffic",
+            "Load Factor (%)":   "VARCHAR — load factor percentage (matches Flight View LF column)",
+            "Pax Revenue($)":    "VARCHAR — empty string (revenue not in WORKSET204 BASEDATA)",
+            "Op/Nonop Flight":   "VARCHAR — 'Y' = operating flight",
+        },
+        "notes": (
+            "USE THIS TABLE for all flight-level queries — values match EXACTLY what users see in the Flight View tab. "
+            "Filter with double-quoted column names (they contain spaces/special chars): "
+            "WHERE \"Dept Sta\"='BLR' AND \"Arvl Sta\"='DEL'  "
+            "OR use LIKE: WHERE \"Flt Desg\" LIKE '6E%'  "
+            "Do NOT need get_db_schema before querying this table."
+        ),
+    },
+    "dm_network_summary": {
+        "description": (
+            "Pre-aggregated NETWORK OVERVIEW dashboard table — EXACTLY what the Network tab shows. "
+            "One row per host-airline O&D pair (origin + dest). "
+            "Includes weekly capacity, demand, load factor, flow %. Query this for network/OD queries."
+        ),
+        "columns": {
+            "orig":                                "VARCHAR — origin airport IATA code",
+            "dest":                                "VARCHAR — destination airport IATA code",
+            "weekly_departures":                   "BIGINT  — number of weekly departures",
+            "weekly_pax_est":                      "VARCHAR — weekly total pax estimate",
+            "apm_weekly_pax_est":                  "VARCHAR — APM weekly pax estimate",
+            "market_weekly_demand":                "VARCHAR — weekly market demand estimate",
+            "host_share_of_market_demand_pct_est": "VARCHAR — host airline % share of market demand",
+            "load_factor_pct_est":                 "VARCHAR — load factor % (matches Network tab)",
+            "flow_pdd_pct_est":                    "VARCHAR — connecting/flow pax as % of total",
+            "abs_total_pax_diff_pct_est":          "VARCHAR — pax vs forecast difference %",
+            "abs_plf_diff_pct_est":                "VARCHAR — LF vs forecast difference %",
+        },
+        "notes": (
+            "USE THIS TABLE for network/OD route queries — matches exactly what Network tab shows. "
+            "Example: SELECT orig, dest, weekly_departures, load_factor_pct_est, flow_pdd_pct_est "
+            "FROM dm_network_summary ORDER BY CAST(weekly_departures AS INTEGER) DESC LIMIT 20"
+        ),
+    },
+    "dm_market_summary": {
+        "description": (
+            "Pre-aggregated MARKET SUMMARY dashboard table — EXACTLY what the O&D Intelligence tab shows. "
+            "One row per O&D pair × carrier. Includes market share, demand, traffic, revenue estimates. "
+            "Query this table for competitive market share and O&D intelligence."
+        ),
+        "columns": {
+            "orig":                           "VARCHAR — origin airport IATA code",
+            "dest":                           "VARCHAR — destination airport IATA code",
+            "carrier":                        "VARCHAR — 2-letter IATA airline code",
+            "is_host_airline":                "VARCHAR — 'True' if this is the host airline, else 'False'",
+            "nonstop_itinerary_count":        "VARCHAR — number of nonstop itinerary options",
+            "single_connect_itinerary_count": "VARCHAR — number of 1-stop connecting itinerary options",
+            "total_demand_est":               "DOUBLE  — per-departure demand estimate",
+            "demand_share_pct_est":           "DOUBLE  — carrier's % share of O&D demand",
+            "total_traffic_est":              "DOUBLE  — per-departure traffic (pax) estimate",
+            "traffic_share_pct_est":          "DOUBLE  — carrier's % share of O&D traffic",
+            "total_revenue_est":              "DOUBLE  — per-departure revenue estimate",
+            "revenue_share_pct_est":          "DOUBLE  — carrier's % share of O&D revenue",
+        },
+        "notes": (
+            "USE THIS TABLE for market share and competitive queries — matches O&D Intelligence tab. "
+            "Example: SELECT carrier, demand_share_pct_est, traffic_share_pct_est, revenue_share_pct_est "
+            "FROM dm_market_summary WHERE orig='BLR' AND dest='DEL' ORDER BY total_traffic_est DESC"
+        ),
+    },
 }
 
 # Convenience list of allowed table names (used for SQL safety check)
@@ -319,7 +446,8 @@ def _validate_sql(query: str) -> str | None:
     Returns an error message string if the query is disallowed, else None.
     """
     stripped = query.strip()
-    if not stripped.upper().startswith("SELECT"):
+    first_word = stripped.upper().split()[0] if stripped else ""
+    if first_word not in ("SELECT", "WITH"):
         return "Only SELECT statements are permitted."
     if _FORBIDDEN.search(stripped):
         return "Forbidden keyword detected — only read operations are allowed."
@@ -350,17 +478,16 @@ def get_db_schema() -> Dict[str, Any]:
             "(subtract 1 when joining flights to workset tables on day)"
         ),
         "join_patterns": {
-            "flights_to_spill": (
-                "JOIN workset_spill ws ON ws.origin = f.origin "
-                "AND ws.dest = f.destination "
-                "AND ws.airline = f.airline "
-                "AND ws.day_of_week = (f.day_of_operation - 1)"
-            ),
             "flights_to_base": (
                 "JOIN workset_base wb ON wb.origin = f.origin "
                 "AND wb.dest = f.destination "
-                "AND wb.op_airline = f.airline "
+                "AND wb.mkt_airline = f.airline "
                 "AND wb.day_of_week = (f.day_of_operation - 1)"
+            ),
+            "base_to_spill_via_record_id": (
+                "JOIN workset_spill ws ON ws.baseIndex_l1 = wb.record_id "
+                "OR ws.baseIndex_l2 = wb.record_id "
+                "-- Note: workset_spill links to workset_base via baseIndex_l1/l2/l3 = record_id"
             ),
         },
         "useful_duckdb_functions": {

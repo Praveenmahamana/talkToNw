@@ -78,6 +78,15 @@ async def lifespan(app: FastAPI):
             init_workset()
         except Exception as exc:
             logger.warning(f"Workset background load failed: {exc}")
+
+        # Re-init schedule name AFTER workset is ready so host_airline is correct
+        try:
+            from app.ai.agent import init_schedule_name
+            init_schedule_name()
+            logger.info("Schedule name and host airline re-initialised from workset profile.")
+        except Exception as exc:
+            logger.debug(f"Re-init schedule name failed: {exc}")
+
         # Build full KG stack: NetworkX → RDFLib → Kuzu → Analytics
         try:
             from app.knowledge_graph.graph_construction import build_all

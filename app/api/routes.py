@@ -11,6 +11,7 @@ from app.api.schemas import (
     IngestRequest, IngestResponse,
     QueryRequest, QueryResponse,
     SuggestRequest, SuggestResponse,
+    ChartSuggestRequest, ChartSuggestResponse,
     AddFlightRequest, AddFlightResponse,
     RetimeFlightRequest, RetimeFlightResponse,
     HealthResponse, RouteSearchRequest,
@@ -18,7 +19,7 @@ from app.api.schemas import (
 from app.services.schedule_service import ScheduleService
 from app.services.route_analysis_service import RouteAnalysisService
 from app.services.itinerary_service import ItineraryService
-from app.services.viz_service import extract_visualizations
+from app.services.viz_service import extract_visualizations, suggest_chart_spec
 from app.simulation.add_flight import simulate_add_flight
 from app.simulation.retime_flight import simulate_retime_flight
 from app.ai.agent import ScheduleAgent
@@ -76,6 +77,7 @@ def _df_to_json(df) -> List[Dict]:
 @router.get("/health", response_model=HealthResponse, tags=["System"])
 async def health_check():
     """Check API, database, and AI availability."""
+    from app.ai.vertex_client import _model_name
     try:
         count = _svc.flight_count()
     except Exception:
@@ -84,6 +86,7 @@ async def health_check():
         status="ok",
         db_flight_count=count,
         vertex_ai=is_available(),
+        model=_model_name,
     )
 
 
@@ -92,6 +95,284 @@ async def schedule_summary():
     """Return aggregate statistics about the loaded schedule (used by dashboard)."""
     from app.database.queries import get_summary_stats
     return get_summary_stats()
+
+
+@router.get("/kg-viz", tags=["System"])
+async def kg_viz_data(top_airports: int = 80):
+    """
+    Knowledge-graph data for the boot loader and Brain tab visualisation.
+    Returns top airports by movements, ALL routes between those airports,
+    and top airlines — derived from the live schedule via DuckDB.
+    """
+    from app.database.db import fetchdf
+    import math
+
+    def _clean(val):
+        if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+            return 0
+        if hasattr(val, "item"):
+            return val.item()
+        return val
+
+    try:
+        # ── Top N airports by total movements ───────────────────────────────
+        ap_df = fetchdf(f"""
+            SELECT airport, COUNT(*) AS movements
+            FROM (
+                SELECT origin      AS airport FROM flights
+                UNION ALL
+                SELECT destination AS airport FROM flights
+            ) t
+            GROUP BY airport
+            ORDER BY movements DESC
+            LIMIT {int(top_airports)}
+        """)
+        airports = [{"iata": r["airport"], "movements": _clean(r["movements"])}
+                    for _, r in ap_df.iterrows() if r["airport"]]
+
+        # Build in-list for DuckDB (safe: IATA codes are alpha only)
+        iata_set = {a["iata"] for a in airports}
+        in_clause = ", ".join(f"'{c}'" for c in iata_set)
+
+        # ── ALL routes where BOTH endpoints are in the airport set ──────────
+        # This is the real inter-airport graph — can be thousands of edges
+        rt_df = fetchdf(f"""
+            SELECT origin, destination,
+                   COUNT(*)                AS flights,
+                   COUNT(DISTINCT airline) AS airlines
+            FROM flights
+            WHERE origin      IN ({in_clause})
+              AND destination IN ({in_clause})
+            GROUP BY origin, destination
+            ORDER BY flights DESC
+        """)
+        routes = [{"o": r["origin"], "d": r["destination"],
+                   "flights": _clean(r["flights"]), "airlines": _clean(r["airlines"])}
+                  for _, r in rt_df.iterrows()]
+
+        # ── Top 30 airlines by flight count ─────────────────────────────────
+        al_df = fetchdf("""
+            SELECT airline, COUNT(*) AS flights
+            FROM flights
+            GROUP BY airline
+            ORDER BY flights DESC
+            LIMIT 30
+        """)
+        airlines = [{"iata": r["airline"], "flights": _clean(r["flights"])}
+                    for _, r in al_df.iterrows() if r["airline"]]
+
+        # ── Workset model data: BASEDATA + SPILLDATA (graceful degradation) ──
+        base_airports, base_routes, spill_markets, spill_airlines = [], [], [], []
+
+        try:
+            ba_df = fetchdf(f"""
+                SELECT origin AS airport,
+                       CAST(SUM(apm_dmd)   AS INTEGER) AS weekly_demand,
+                       CAST(SUM(apm_pax)   AS INTEGER) AS weekly_pax,
+                       CAST(SUM(apm_spill) AS INTEGER) AS weekly_spill,
+                       ROUND(AVG(CASE WHEN apm_cap > 0
+                                      THEN CAST(apm_pax AS FLOAT) / apm_cap
+                                      ELSE NULL END), 3) AS avg_lf
+                FROM workset_base
+                WHERE mkt_ind <= 1
+                  AND origin IN ({in_clause})
+                GROUP BY origin
+                ORDER BY weekly_demand DESC
+            """)
+            base_airports = [{"iata": r["airport"],
+                              "demand": _clean(r["weekly_demand"]),
+                              "pax":    _clean(r["weekly_pax"]),
+                              "spill":  _clean(r["weekly_spill"]),
+                              "lf":     _clean(r["avg_lf"])}
+                             for _, r in ba_df.iterrows() if r.get("airport")]
+            logger.info(f"kg-viz: {len(base_airports)} airports with BASEDATA demand")
+        except Exception as exc:
+            logger.info(f"kg-viz workset_base airport query skipped: {exc}")
+
+        try:
+            br_df = fetchdf(f"""
+                SELECT origin, dest,
+                       CAST(SUM(apm_dmd)   AS INTEGER) AS weekly_demand,
+                       CAST(SUM(apm_pax)   AS INTEGER) AS weekly_pax,
+                       CAST(SUM(apm_spill) AS INTEGER) AS weekly_spill,
+                       ROUND(AVG(CASE WHEN apm_cap > 0
+                                      THEN CAST(apm_pax AS FLOAT) / apm_cap
+                                      ELSE NULL END), 3) AS avg_lf,
+                       COUNT(*) AS departures
+                FROM workset_base
+                WHERE mkt_ind <= 1
+                  AND origin IN ({in_clause})
+                  AND dest   IN ({in_clause})
+                GROUP BY origin, dest
+                ORDER BY weekly_demand DESC
+            """)
+            base_routes = [{"o": r["origin"], "d": r["dest"],
+                            "demand": _clean(r["weekly_demand"]),
+                            "pax":    _clean(r["weekly_pax"]),
+                            "spill":  _clean(r["weekly_spill"]),
+                            "lf":     _clean(r["avg_lf"]),
+                            "deps":   _clean(r["departures"])}
+                           for _, r in br_df.iterrows()]
+            logger.info(f"kg-viz: {len(base_routes)} O-D routes with BASEDATA demand")
+        except Exception as exc:
+            logger.info(f"kg-viz workset_base route query skipped: {exc}")
+
+        try:
+            sm_df = fetchdf(f"""
+                SELECT market_origin AS o, market_dest AS d,
+                       CAST(SUM(total_demand) AS INTEGER) AS total_demand,
+                       CAST(SUM(total_pax)    AS INTEGER) AS total_pax,
+                       CAST(SUM(total_spill)  AS INTEGER) AS total_spill,
+                       ROUND(AVG(mkt_share), 4) AS avg_share
+                FROM workset_spill
+                WHERE market_origin IN ({in_clause})
+                  AND market_dest   IN ({in_clause})
+                GROUP BY market_origin, market_dest
+                ORDER BY total_demand DESC
+                LIMIT 200
+            """)
+            spill_markets = [{"o": r["o"], "d": r["d"],
+                              "demand": _clean(r["total_demand"]),
+                              "pax":    _clean(r["total_pax"]),
+                              "spill":  _clean(r["total_spill"]),
+                              "share":  _clean(r["avg_share"])}
+                             for _, r in sm_df.iterrows()]
+            logger.info(f"kg-viz: {len(spill_markets)} O-D pairs from SPILLDATA")
+        except Exception as exc:
+            logger.info(f"kg-viz workset_spill market query skipped: {exc}")
+
+        try:
+            sa_df = fetchdf("""
+                SELECT airline,
+                       COUNT(DISTINCT market_origin || '-' || market_dest) AS markets,
+                       CAST(SUM(total_demand) AS INTEGER) AS total_demand,
+                       CAST(SUM(total_pax)    AS INTEGER) AS total_pax,
+                       ROUND(AVG(mkt_share), 4) AS avg_share
+                FROM workset_spill
+                WHERE airline IS NOT NULL AND LENGTH(TRIM(airline)) > 0
+                GROUP BY airline
+                ORDER BY total_demand DESC
+                LIMIT 30
+            """)
+            spill_airlines = [{"iata": r["airline"],
+                               "markets": _clean(r["markets"]),
+                               "demand":  _clean(r["total_demand"]),
+                               "pax":     _clean(r["total_pax"]),
+                               "share":   _clean(r["avg_share"])}
+                              for _, r in sa_df.iterrows() if r.get("airline")]
+            logger.info(f"kg-viz: {len(spill_airlines)} airlines from SPILLDATA")
+        except Exception as exc:
+            logger.info(f"kg-viz workset_spill airline query skipped: {exc}")
+
+        # ── KG-level stats for NER persona derivation ───────────────────────
+        stats = {
+            "total_airports":  len(airports),
+            "total_routes":    len(routes),
+            "total_airlines":  len(airlines),
+            "base_routes":     len(base_routes),
+            "spill_markets":   len(spill_markets),
+            "has_demand_data": len(base_routes) > 0,
+        }
+
+        # ── Workset flat files: alliance.dat + mktSize.dat ───────────────────
+        import csv, os
+        from pathlib import Path
+        alliances, markets = [], []
+        _wd = None
+        try:
+            _data_folder = os.getenv("SCHEDAI_DATA_FOLDER", "")
+            _p = Path(_data_folder)
+            _wd = _p.parent if _p.name == "out" else _p
+        except Exception:
+            pass
+
+        if _wd:
+            try:
+                aln_file = _wd / "data" / "alliance.dat"
+                if aln_file.exists():
+                    aln_dict: dict = {}
+                    with open(aln_file, newline="", encoding="utf-8-sig") as f:
+                        for row in csv.DictReader(f):
+                            name = (row.get("ALLNCENM") or "").strip()
+                            code = (row.get("ALNCD") or "").strip()
+                            if name and code:
+                                aln_dict.setdefault(name, []).append(code)
+                    alliances = sorted(
+                        [{"name": k, "members": v} for k, v in aln_dict.items() if len(v) >= 3],
+                        key=lambda x: -len(x["members"])
+                    )[:12]
+                    logger.info(f"kg-viz: loaded {len(alliances)} alliance groups from alliance.dat")
+            except Exception as exc:
+                logger.warning(f"alliance.dat parse failed: {exc}")
+
+            try:
+                mkt_file = _wd / "data" / "mktSize.dat"
+                if mkt_file.exists():
+                    mkt_rows: list = []
+                    with open(mkt_file, newline="", encoding="utf-8-sig") as f:
+                        for row in csv.DictReader(f):
+                            o = (row.get("ORG") or "").strip()
+                            d = (row.get("DEST") or "").strip()
+                            try:
+                                dem = int(float(row.get("WKLYDMD", 0) or 0))
+                            except Exception:
+                                dem = 0
+                            if o in iata_set and d in iata_set and dem > 0:
+                                mkt_rows.append({"o": o, "d": d, "wkly_demand": dem})
+                    mkt_rows.sort(key=lambda x: -x["wkly_demand"])
+                    markets = mkt_rows[:150]
+                    logger.info(f"kg-viz: loaded {len(markets)} markets from mktSize.dat")
+            except Exception as exc:
+                logger.warning(f"mktSize.dat parse failed: {exc}")
+
+        return {
+            "airports":       airports,
+            "routes":         routes,
+            "airlines":       airlines,
+            "alliances":      alliances,
+            "markets":        markets,
+            "base_airports":  base_airports,
+            "base_routes":    base_routes,
+            "spill_markets":  spill_markets,
+            "spill_airlines": spill_airlines,
+            "stats":          stats,
+        }
+
+    except Exception as exc:
+        logger.warning(f"kg-viz query failed: {exc}")
+        return {"airports": [], "routes": [], "airlines": [], "stats": {}}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Model management
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/model", tags=["System"])
+async def get_model_info():
+    """Return the currently active model and the full list of available models."""
+    from app.ai.vertex_client import _model_name, AVAILABLE_MODELS
+    return {
+        "active": _model_name,
+        "models": [{"id": mid, "label": lbl, "provider": prov} for mid, lbl, prov in AVAILABLE_MODELS],
+        "claude_setup_url": "https://console.cloud.google.com/vertex-ai/publishers/anthropic/model-garden/claude-sonnet-4-5",
+    }
+
+
+@router.post("/model", tags=["System"])
+async def switch_model(body: dict):
+    """
+    Hot-swap the active AI model at runtime — no restart required.
+    Body: {"model": "claude-sonnet-4-5"}
+    """
+    from app.ai.vertex_client import set_model, AVAILABLE_MODELS
+    model_id = (body.get("model") or "").strip()
+    valid_ids = [m[0] for m in AVAILABLE_MODELS]
+    if not model_id:
+        raise HTTPException(status_code=400, detail="Missing 'model' field")
+    if model_id not in valid_ids:
+        raise HTTPException(status_code=400, detail=f"Unknown model '{model_id}'. Valid: {valid_ids}")
+    set_model(model_id)
+    return {"active": model_id, "status": "switched"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -104,8 +385,12 @@ async def ingest_schedules(request: IngestRequest):
     Load and normalise schedule files from a local folder path.
     Supports CSV, TSV, TXT, and SSIM formats.
     """
-    logger.info(f"POST /ingest — folder: {request.folder_path}")
+    logger.info(f"POST /ingest — folder: {request.folder_path}, clear={request.clear}")
     try:
+        if request.clear:
+            from app.database.queries import clear_flights
+            cleared = clear_flights()
+            logger.info(f"Pre-ingest clear: removed {cleared} existing flight records.")
         result = _svc.ingest_folder(request.folder_path)
 
         # Rebuild full knowledge graph stack in background after new data is loaded
@@ -151,7 +436,7 @@ async def query_schedule(request: QueryRequest):
     """
     logger.info(f"POST /query — '{request.query[:80]}' persona={request.persona}")
     try:
-        result = _agent.query(request.query, session_id=request.session_id, persona=request.persona)
+        result = _agent.query(request.query, session_id=request.session_id, persona=request.persona, panel_context=request.panel_context)
         vizs = extract_visualizations(result.get("tool_results", []))
         return QueryResponse(
             answer=result.get("answer", ""),
@@ -205,19 +490,21 @@ async def suggest_questions(request: SuggestRequest):
     persona_key = (request.persona or "").lower()
     persona_name, persona_desc = _PERSONA_LABELS.get(persona_key, ("General Analyst", "airline schedule intelligence"))
 
-    answer_snippet = request.answer[:500].strip()
-    entities_str   = ", ".join(request.entities[:10]) if request.entities else "none highlighted"
+    answer_snippet   = request.answer[:500].strip()
+    entities_str     = ", ".join(request.entities[:10]) if request.entities else "none highlighted"
+    workset_ctx_line = f"Workset context: {request.workset_context}\n" if request.workset_context else ""
 
     user_msg = (
         f"User asked: {request.query}\n\n"
         f"AI answered (excerpt): {answer_snippet}\n\n"
         f"Active persona: {persona_name} — focuses on {persona_desc}\n"
+        f"{workset_ctx_line}"
         f"Entities in graph context: {entities_str}\n\n"
         "Generate exactly 4 follow-up research questions that:\n"
         "1. Continue naturally from the user's direction (don't repeat the same angle)\n"
         "2. Go progressively deeper or branch into related strategic angles\n"
         "3. Match the persona's focus area\n"
-        "4. Are specific — include airport codes, airlines, or metrics where relevant\n"
+        "4. Are specific to the workset airlines and airports — use actual codes from the context\n"
         "5. Are concise (max 15 words each)\n\n"
         'Reply ONLY with a JSON array: ["Q1?", "Q2?", "Q3?", "Q4?"]'
     )
@@ -247,6 +534,36 @@ async def suggest_questions(request: SuggestRequest):
     except Exception as exc:
         logger.warning(f"Suggest endpoint error: {exc}")
         return SuggestResponse(questions=[])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AI Chart Suggestion
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post("/chart-suggest", response_model=ChartSuggestResponse, tags=["Query"])
+async def chart_suggest(request: ChartSuggestRequest):
+    """
+    Ask Gemini to choose the best chart type (bubble, network, scatter, bar, pie)
+    for the data returned by a query, and return a structured spec the frontend
+    can render directly — no extra SQL round-trip needed.
+    """
+    if not is_available():
+        return ChartSuggestResponse(error="Vertex AI not available")
+    if not request.columns or not request.rows:
+        return ChartSuggestResponse(error="No data provided")
+    try:
+        spec = suggest_chart_spec(
+            query=request.query,
+            answer=request.answer,
+            columns=request.columns,
+            rows=request.rows,
+        )
+        if spec is None:
+            return ChartSuggestResponse(error="Chart suggestion failed")
+        return ChartSuggestResponse(spec=spec)
+    except Exception as exc:
+        logger.warning(f"chart-suggest error: {exc}")
+        return ChartSuggestResponse(error=str(exc))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -438,7 +755,7 @@ async def flight_opportunities(origin: str, destination: str, airline: str = "")
     weekly_spill_total = None
     try:
         row = conn.execute("""
-            SELECT SUM(demand_pax), SUM(spill_pax), SUM(booked_pax), AVG(cap_total)
+            SELECT SUM(apm_dmd), SUM(apm_spill), SUM(apm_pax), AVG(apm_cap)
             FROM workset_base
             WHERE origin = ? AND dest = ?
         """, [origin, dest]).fetchone()
@@ -455,7 +772,7 @@ async def flight_opportunities(origin: str, destination: str, airline: str = "")
         pass
 
     # ── 2b. Workset base: per-dep-time LF + market share from BASEDATA ────────
-    # workset_base has clear column mapping: booked_pax (col11) / cap_total (col10) = real LF
+    # workset_base has clear column mapping: apm_pax (col12) / apm_cap (col10) = real LF
     # Much more reliable than workset_spill where lf_pax encoding varies by route type
     base_by_hour: dict = {}        # dep_hour -> {lf, spill, demand, cap}
     pm_airline_traffic: dict = {}  # airline -> total weekly booked pax (for market share)
@@ -471,10 +788,10 @@ async def flight_opportunities(origin: str, destination: str, airline: str = "")
                          ELSE NULL END
                 AS INTEGER)                              AS dep_hour,
                 op_airline,
-                SUM(booked_pax)                          AS tot_booked,
-                SUM(cap_total)                           AS tot_cap,
-                SUM(spill_pax)                           AS tot_spill,
-                SUM(demand_pax)                          AS tot_demand
+                SUM(apm_pax)                             AS tot_booked,
+                SUM(apm_cap)                             AS tot_cap,
+                SUM(apm_spill)                           AS tot_spill,
+                SUM(apm_dmd)                             AS tot_demand
             FROM workset_base
             WHERE origin = ? AND dest = ?
               AND dep_time IS NOT NULL
@@ -838,6 +1155,109 @@ Write a concise analyst briefing in this JSON (no fences):
             "bullets": [],
             "recommendation": "Review the top route deltas manually."
         }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dashboard intelligence endpoints (insightsDB-style tables)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/workset/dashboard/profile", tags=["Workset"])
+async def dashboard_profile():
+    """Return workset profile (host airline, workset name, etc.) plus live workset hints."""
+    from app.services.workset_service import get_dashboard_profile, get_workset_hints, dashboard_is_ready, init_dashboard
+    init_dashboard()
+    profile = get_dashboard_profile()
+    hints   = get_workset_hints()
+    return {"ready": dashboard_is_ready(), "profile": {**profile, **hints}}
+
+
+@router.get("/workset/dashboard/network", tags=["Workset"])
+async def dashboard_network(top_n: int = 200):
+    """Level 1 OD network summary — one row per host OD pair."""
+    from app.services.workset_service import get_network_summary, init_dashboard
+    init_dashboard()
+    rows = get_network_summary(top_n=top_n)
+    return {"rows": rows, "count": len(rows)}
+
+
+@router.get("/workset/dashboard/flight-report", tags=["Workset"])
+async def dashboard_flight_report(orig: str = "", dest: str = "", carrier: str = "", top_n: int = 500):
+    """Flight View — sampled rows + full-dataset KPIs from dm_flight_report."""
+    from app.services.workset_service import get_flight_report, get_flight_count, get_flight_kpis, init_dashboard
+    init_dashboard()
+    rows  = get_flight_report(orig=orig, dest=dest, carrier=carrier, top_n=top_n)
+    total_count = get_flight_count(orig=orig, dest=dest, carrier=carrier)
+    kpis  = get_flight_kpis(orig=orig, dest=dest, carrier=carrier)
+    return {"rows": rows, "count": len(rows), "total_count": total_count, "kpis": kpis}
+
+
+@router.get("/workset/dashboard/market-summary", tags=["Workset"])
+async def dashboard_market_summary(orig: str = "", dest: str = ""):
+    """O&D market summary by airline — demand/traffic/revenue shares."""
+    from app.services.workset_service import get_market_summary, init_dashboard
+    init_dashboard()
+    rows = get_market_summary(orig=orig, dest=dest)
+    return {"rows": rows, "count": len(rows)}
+
+
+@router.get("/workset/dashboard/itin-report", tags=["Workset"])
+async def dashboard_itin_report(orig: str = "", dest: str = "", carrier: str = "", top_n: int = 500):
+    """Itinerary Report — all itineraries optionally filtered by OD and/or carrier."""
+    from app.services.workset_service import get_itin_report, init_dashboard
+    init_dashboard()
+    rows = get_itin_report(orig=orig, dest=dest, carrier=carrier, top_n=top_n)
+    return {"rows": rows, "count": len(rows)}
+
+
+@router.get("/workset/dashboard/market-carrier", tags=["Workset"])
+async def dashboard_market_carrier(orig: str, dest: str):
+    """Full Market Summary by Airline for an OD pair (for OD detail panel)."""
+    from app.services.workset_service import get_market_carrier_detail, init_dashboard
+    init_dashboard()
+    rows = get_market_carrier_detail(orig=orig, dest=dest)
+    return {"rows": rows, "count": len(rows)}
+
+
+@router.get("/workset/dashboard/flight-flow-od", tags=["Workset"])
+async def dashboard_flight_flow_od(flt: str):
+    """Flow OD pax distribution for a specific flight (all segments matched)."""
+    from app.services.workset_service import get_flight_flow_od, init_dashboard
+    init_dashboard()
+    rows = get_flight_flow_od(flt=flt)
+    total_traffic = sum(float(r.get("total_traffic") or 0) for r in rows)
+    for r in rows:
+        t = float(r.get("total_traffic") or 0)
+        r["traffic_share_pct"] = round(t / total_traffic * 100, 1) if total_traffic else 0
+    return {"rows": rows, "count": len(rows), "total_traffic": round(total_traffic, 1)}
+
+
+@router.get("/workset/dashboard/route-market-report", tags=["Workset"])
+async def dashboard_route_market_report(orig: str, dest: str, top_n: int = 200):
+    """Market Report for a route — all O&D markets whose pax flow through orig→dest.
+    Matches PMCal flow_traf-report-market.csv column structure."""
+    from app.services.workset_service import get_route_market_report, init_dashboard
+    init_dashboard()
+    rows = get_route_market_report(orig=orig, dest=dest, top_n=top_n)
+    return {"rows": rows, "count": len(rows)}
+
+
+@router.get("/workset/dashboard/route-flow-itins", tags=["Workset"])
+async def dashboard_route_flow_itins(orig: str, dest: str, top_n: int = 500):
+    """Flow Itinerary Report for a route — all itineraries whose pax flow through orig→dest.
+    Matches PMCal flow_traf-report-itin.csv column structure."""
+    from app.services.workset_service import get_route_flow_itins, init_dashboard
+    init_dashboard()
+    rows = get_route_flow_itins(orig=orig, dest=dest, top_n=top_n)
+    return {"rows": rows, "count": len(rows)}
+
+
+@router.post("/workset/dashboard/rebuild", tags=["Workset"])
+async def rebuild_dashboard_tables():
+    """Drop and regenerate dm_flight_report and dm_network_summary from workset_base.
+    Call this after workset data changes or schema fixes."""
+    from app.services.workset_service import rebuild_dm_tables
+    result = rebuild_dm_tables()
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────

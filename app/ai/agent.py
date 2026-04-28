@@ -24,19 +24,65 @@ from app.ai import session_store
 from app.database.queries import log_query
 
 
-_MAX_TOOL_ROUNDS = 12
+_MAX_TOOL_ROUNDS = 15
 
 # Cache the resolved schedule name (set once at startup via init_schedule_name())
 _schedule_name: str = "the loaded schedule"
+_host_airline: str = ""
+
+
+def _prune_tool_data_from_history(contents: List[Dict]) -> List[Dict]:
+    """
+    Strip raw functionResponse payloads from prior session history.
+
+    The LM only needs the TEXT turns from previous rounds to maintain
+    conversational context (so follow-up questions work).  Feeding it
+    raw tool-result JSON from prior turns causes it to blend stale data
+    with fresh data and produce contradictory answers.
+
+    Kept:    role=user text turns, role=model text turns, functionCall declarations
+    Stripped: functionResponse data bodies  →  replaced with a lightweight stub
+    """
+    pruned: List[Dict] = []
+    for turn in contents:
+        role  = turn.get("role", "")
+        parts = turn.get("parts", [])
+        new_parts: List[Dict] = []
+        for p in parts:
+            if "text" in p:
+                new_parts.append(p)
+            elif "functionCall" in p:
+                # Keep the call declaration so the LM knows which tool was invoked
+                new_parts.append(p)
+            elif "functionResponse" in p:
+                # Replace payload with a minimal stub that preserves the role structure
+                name = p.get("functionResponse", {}).get("name", "tool")
+                new_parts.append({
+                    "functionResponse": {
+                        "name":     name,
+                        "response": {
+                            "_pruned": True,
+                            "_note":   (
+                                f"Data from {name} was retrieved and used in the "
+                                "assistant's text reply for that turn. "
+                                "Do NOT use it for the current question — call fresh tools."
+                            ),
+                        },
+                    }
+                })
+        if new_parts:
+            pruned.append({"role": role, "parts": new_parts})
+    return pruned
 
 
 def init_schedule_name() -> None:
     """
     Read the loaded schedule file name(s) from the DB and cache them
     so the system prompt can reference the actual data source.
+    Also reads the host airline from workset profile.
     Called once during app startup after ingestion.
     """
-    global _schedule_name
+    global _schedule_name, _host_airline
     try:
         from app.database.db import get_connection
         conn = get_connection()
@@ -49,9 +95,28 @@ def init_schedule_name() -> None:
     except Exception:
         pass  # keep default
 
+    # Read host airline from workset profile
+    try:
+        from app.services.workset_service import get_dashboard_profile
+        prof = get_dashboard_profile()
+        if prof and prof.get("host_airline"):
+            _host_airline = prof["host_airline"]
+    except Exception:
+        pass
+
 
 def _get_system_prompt(persona: Optional[str] = None) -> str:
-    return build_system_prompt(_schedule_name, persona=persona)
+    host = _host_airline
+    if not host:
+        # Workset may not have been loaded when init_schedule_name() first ran — read dynamically
+        try:
+            from app.services.workset_service import get_dashboard_profile
+            prof = get_dashboard_profile()
+            if prof and prof.get("host_airline"):
+                host = prof["host_airline"]
+        except Exception:
+            pass
+    return build_system_prompt(_schedule_name, persona=persona, host_airline=host or None)
 
 
 class ScheduleAgent:
@@ -70,7 +135,7 @@ class ScheduleAgent:
     # Public entry point
     # ─────────────────────────────────────────────────────────────────────────
 
-    def query(self, user_query: str, session_id: Optional[str] = None, persona: Optional[str] = None) -> Dict[str, Any]:
+    def query(self, user_query: str, session_id: Optional[str] = None, persona: Optional[str] = None, panel_context: Optional[str] = None) -> Dict[str, Any]:
         """
         Process a natural-language query through the Gemini agent loop.
 
@@ -78,6 +143,8 @@ class ScheduleAgent:
         included so Gemini has full context of the thread.
         If session_id is None or not found, a new session is created.
         If persona is provided, the system prompt is augmented with persona-specific lens.
+        If panel_context is provided, it is prepended to the user query so the LM can
+        cross-validate its answer against the pre-aggregated dashboard numbers.
 
         Falls back to deterministic-only mode when Vertex AI is not configured.
         """
@@ -88,6 +155,17 @@ class ScheduleAgent:
             session_id = session_store.create_session()
         prior_contents = session_store.get_contents(session_id)
 
+        # Strip raw tool-result payloads from prior turns so the LM bases its
+        # answer solely on tools called in THIS turn, not stale data from earlier
+        # turns that could cause contradictory or blended responses.
+        prior_contents = _prune_tool_data_from_history(prior_contents)
+
+        # If the dashboard has pre-aggregated KPI context, prepend it so the LM
+        # can cross-validate its answer (e.g. "flights = 234" must match panel).
+        effective_query = user_query
+        if panel_context:
+            effective_query = f"{panel_context}\n\n{user_query}"
+
         if not is_available():
             return self._deterministic_fallback(user_query, start_time, session_id)
 
@@ -96,9 +174,9 @@ class ScheduleAgent:
         final_answer: str        = ""
         confidence:   str        = "Low"
 
-        # Build history: prior session context + new user message
+        # Build history: prior session context + new user message (with panel context prepended if available)
         history: List[Dict] = prior_contents + [
-            {"role": "user", "parts": [{"text": user_query}]}
+            {"role": "user", "parts": [{"text": effective_query}]}
         ]
 
         try:
@@ -156,6 +234,30 @@ class ScheduleAgent:
         except Exception as exc:
             logger.exception(f"Agent loop error: {exc}")
             final_answer = f"Agent error: {exc}"
+
+        # ── Synthesis fallback: if tool rounds exhausted without text ─────────
+        if not final_answer and tool_results:
+            logger.warning("Tool rounds exhausted without plain-text answer — requesting synthesis.")
+            try:
+                synth_response = generate_content(
+                    contents=history + [{
+                        "role": "user",
+                        "parts": [{"text": (
+                            "You have gathered the relevant data above. "
+                            "Please write your final analysis and directly answer the user's question. "
+                            "Be thorough but concise. Include all relevant numbers from the tool results."
+                        )}],
+                    }],
+                    tools=None,          # No tools — force a plain-text response
+                    system_instruction=_get_system_prompt(persona=persona),
+                    temperature=0.1,
+                )
+                if synth_response:
+                    final_answer = extract_text(synth_response)
+                    if final_answer:
+                        logger.info("Synthesis call produced an answer.")
+            except Exception as synth_exc:
+                logger.error(f"Synthesis call failed: {synth_exc}")
 
         # Pull confidence: prefer Gemini's stated confidence in the answer,
         # fall back to last tool result

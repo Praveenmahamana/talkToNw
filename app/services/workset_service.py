@@ -305,38 +305,91 @@ def _load_spill_data(conn, path: Path):
         logger.warning(f"SPILLDATA.dat not found at {path}")
         return
     if _table_exists(conn, "workset_spill"):
-        return
+        # Schema upgrade: if fare columns are missing, drop and re-load
+        spill_cols = [c[1] for c in conn.execute("PRAGMA table_info(workset_spill)").fetchall()]
+        if "fare_HO" not in spill_cols:
+            conn.execute("DROP TABLE workset_spill")
+            logger.info("workset_spill missing fare columns — dropping for schema upgrade reload")
+        else:
+            return
     logger.info("Loading SPILLDATA (this may take ~30 s) …")
-    # 35+ comma-separated fields, no header — DuckDB zero-pads: column00..column34
-    # 00=orig,01=dest,02=dep_time,03=day,04=cap_total,05=cap_biz,
-    # 08=lf_pax,09=lf_rev, 12=spill_pax,13=spill_rev,
-    # 14=recap_pax,15=recap_rev, 16=total_lf_pax,17=total_lf_rev,
-    # 20=flag, 21=block_time,22=stops,23=mkt_share,24=airline,
-    # 25=is_codeshare,26=flight_id
+    # 35 comma-separated fields, no header — market/itinerary level
+    # Each row = ONE ITINERARY option for a market (true O&D pair)
+    # 4-segment demand model: HO=High-yield Outbound, LO=Low-yield Outbound,
+    #                          HR=High-yield Return,   LR=Low-yield Return
+    # col[0]  = market_origin  (true passenger origin)
+    # col[1]  = market_dest    (true passenger destination)
+    # col[2]  = dep_time (first leg departure HHMM)
+    # col[3]  = day_of_week (0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat — 0-based SUNDAY-FIRST)
+    # col[4-7]= fare indices HO/LO/HR/LR (relative indices, NOT revenue)
+    # col[8-11] = demand by yield segment: dmd_HO, dmd_LO, dmd_HR, dmd_LR
+    # col[12-15]= spill by yield segment:  spill_HO, spill_LO, spill_HR, spill_LR
+    # col[16-19]= traffic/pax by segment:  traffic_HO, traffic_LO, traffic_HR, traffic_LR
+    # col[20] = jet_type (N=narrow, W=wide, R=regional)
+    # col[21] = block_time (total itinerary elapsed time, min)
+    # col[22] = stops (0=nonstop, 1=one-stop/two-legs, 2=two-stop/three-legs)
+    # col[23] = mkt_share (market share fraction, PM logit model output)
+    # col[24] = airline (dominant/marketing carrier)
+    # col[25] = is_codeshare (interline/codeshare flag: 0=operating, 1=codeshare)
+    # col[26] = baseIndex_l1  (BASEDATA record_id of leg 1)
+    # col[27] = baseIndex_l2  (BASEDATA record_id of leg 2, empty if nonstop)
+    # col[28] = baseIndex_l3  (BASEDATA record_id of leg 3, empty if ≤1-stop)
+    # COMPUTED: total_demand = sum of 4 demand segments (dmd_HO+dmd_LO+dmd_HR+dmd_LR)
+    #           total_pax    = sum of 4 traffic segments (traffic_HO+..+traffic_LR)
+    #           total_spill  = sum of 4 spill segments   (spill_HO+..+spill_LR)
+    # NOTE: Revenue is NOT available in SPILLDATA — fare columns are relative indices only.
     conn.execute(f"""
         CREATE TABLE workset_spill AS
         SELECT
-            column00                             AS origin,
-            column01                             AS dest,
-            column02                             AS dep_time,
-            TRY_CAST(column03  AS INTEGER)       AS day_of_week,
-            TRY_CAST(column04  AS INTEGER)       AS cap_total,
-            TRY_CAST(column05  AS INTEGER)       AS cap_biz,
-            TRY_CAST(column08  AS FLOAT)         AS lf_pax,
-            TRY_CAST(column09  AS FLOAT)         AS lf_rev,
-            TRY_CAST(column12  AS FLOAT)         AS spill_pax,
-            TRY_CAST(column13  AS FLOAT)         AS spill_rev,
-            TRY_CAST(column14  AS FLOAT)         AS recap_pax,
-            TRY_CAST(column15  AS FLOAT)         AS recap_rev,
-            TRY_CAST(column16  AS FLOAT)         AS total_lf_pax,
-            TRY_CAST(column17  AS FLOAT)         AS total_lf_rev,
-            column20                             AS status_flag,
-            TRY_CAST(column21  AS INTEGER)       AS block_time,
-            TRY_CAST(column22  AS INTEGER)       AS stops,
-            TRY_CAST(column23  AS FLOAT)         AS mkt_share,
-            column24                             AS airline,
-            TRY_CAST(column25  AS INTEGER)       AS is_codeshare,
-            TRY_CAST(column26  AS BIGINT)        AS flight_id
+            column00                                           AS market_origin,
+            column01                                           AS market_dest,
+            column02                                           AS dep_time,
+            TRY_CAST(column03  AS INTEGER)                     AS day_of_week,
+            -- Fares by yield segment (used to compute revenue)
+            TRY_CAST(column04  AS FLOAT)                       AS fare_HO,
+            TRY_CAST(column05  AS FLOAT)                       AS fare_LO,
+            TRY_CAST(column06  AS FLOAT)                       AS fare_HR,
+            TRY_CAST(column07  AS FLOAT)                       AS fare_LR,
+            -- Demand by yield segment
+            TRY_CAST(column08  AS FLOAT)                       AS dmd_HO,
+            TRY_CAST(column09  AS FLOAT)                       AS dmd_LO,
+            TRY_CAST(column10  AS FLOAT)                       AS dmd_HR,
+            TRY_CAST(column11  AS FLOAT)                       AS dmd_LR,
+            -- Spill by yield segment
+            TRY_CAST(column12  AS FLOAT)                       AS spill_HO,
+            TRY_CAST(column13  AS FLOAT)                       AS spill_LO,
+            TRY_CAST(column14  AS FLOAT)                       AS spill_HR,
+            TRY_CAST(column15  AS FLOAT)                       AS spill_LR,
+            -- Traffic (booked pax) by yield segment
+            TRY_CAST(column16  AS FLOAT)                       AS traffic_HO,
+            TRY_CAST(column17  AS FLOAT)                       AS traffic_LO,
+            TRY_CAST(column18  AS FLOAT)                       AS traffic_HR,
+            TRY_CAST(column19  AS FLOAT)                       AS traffic_LR,
+            -- Computed totals across all yield segments
+            COALESCE(TRY_CAST(column08 AS FLOAT),0) + COALESCE(TRY_CAST(column09 AS FLOAT),0) +
+            COALESCE(TRY_CAST(column10 AS FLOAT),0) + COALESCE(TRY_CAST(column11 AS FLOAT),0)
+                                                               AS total_demand,
+            COALESCE(TRY_CAST(column16 AS FLOAT),0) + COALESCE(TRY_CAST(column17 AS FLOAT),0) +
+            COALESCE(TRY_CAST(column18 AS FLOAT),0) + COALESCE(TRY_CAST(column19 AS FLOAT),0)
+                                                               AS total_pax,
+            COALESCE(TRY_CAST(column12 AS FLOAT),0) + COALESCE(TRY_CAST(column13 AS FLOAT),0) +
+            COALESCE(TRY_CAST(column14 AS FLOAT),0) + COALESCE(TRY_CAST(column15 AS FLOAT),0)
+                                                               AS total_spill,
+            -- Revenue = traffic × fare per yield segment (prorated allocation for multi-leg itineraries)
+            COALESCE(TRY_CAST(column16 AS FLOAT),0) * COALESCE(TRY_CAST(column04 AS FLOAT),0) +
+            COALESCE(TRY_CAST(column17 AS FLOAT),0) * COALESCE(TRY_CAST(column05 AS FLOAT),0) +
+            COALESCE(TRY_CAST(column18 AS FLOAT),0) * COALESCE(TRY_CAST(column06 AS FLOAT),0) +
+            COALESCE(TRY_CAST(column19 AS FLOAT),0) * COALESCE(TRY_CAST(column07 AS FLOAT),0)
+                                                               AS total_revenue,
+            column20                                           AS jet_type,
+            TRY_CAST(column21  AS INTEGER)                     AS block_time,
+            TRY_CAST(column22  AS INTEGER)                     AS stops,
+            TRY_CAST(column23  AS FLOAT)                       AS mkt_share,
+            column24                                           AS airline,
+            TRY_CAST(column25  AS INTEGER)                     AS is_codeshare,
+            TRY_CAST(column26  AS BIGINT)                      AS baseIndex_l1,
+            TRY_CAST(column27  AS BIGINT)                      AS baseIndex_l2,
+            TRY_CAST(column28  AS BIGINT)                      AS baseIndex_l3
         FROM read_csv('{_csv_path(path)}',
                       header=false, delim=',', null_padding=true,
                       all_varchar=true, parallel=true)
@@ -355,11 +408,28 @@ def _load_base_data(conn, path: Path):
     if _table_exists(conn, "workset_base"):
         return
     logger.info("Loading BASEDATA (this may take ~15 s) …")
-    # 24 comma-separated fields, no header — DuckDB zero-pads: column00..column23
-    # 00=rec_id,01=orig,02=dest,03=flt_num,04=dep,05=arr,06=block,07=dist,
-    # 08=op_aln,09=ac_type,10=cap_total,11=booked,12=demand,13=yield,
-    # 14=spill,15=day,16=stops,17=op_aln2,18=mkt_aln,19=flt_num2,
-    # 20=mct_dep,21=mct_arr
+    # 24 comma-separated fields, no header — verified against WORKSET204 and filesColumnsSegmsPM.yaml
+    # col[0]  = record_id   (baseIndex — unique leg identifier)
+    # col[1]  = origin      (leg departure airport)
+    # col[2]  = dest        (leg arrival airport)
+    # col[3]  = flt_num
+    # col[4]  = dep_time, col[5]=arr_time, col[6]=block_time_min, col[7]=distance_mi
+    # col[8]  = mkt_airline (aln — MARKETING/ticket-issuing carrier)
+    # col[9]  = aircraft_type (subfleet)
+    # col[10] = apm_cap     (seat capacity)
+    # col[11] = apm_dmd     (DEMAND — model-predicted demand per departure)  ← col[12] in old wrong code
+    # col[12] = apm_pax     (TRAFFIC — predicted pax on board per departure) ← col[11] in old wrong code
+    # col[13] = apm_lpax    (local pax — journey = this single leg)
+    # col[14] = apm_spill   (spilled pax)
+    # col[15] = day_of_week (0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat — 0-based SUNDAY-FIRST)
+    # col[16] = mkt_ind     (dedup flag: 0-1=primary operating row, 2+=codeshare/thru duplicate)
+    # col[17] = acf_own     (aircraft owner — not loaded)
+    # col[18] = op_airline  (op_aln — OPERATING carrier, physically flies the aircraft)
+    # col[19] = op_flt_num  (not loaded)
+    # col[20] = dept_offset (UTC timezone offset at departure airport, minutes)
+    # col[21] = arrv_offset (UTC timezone offset at arrival airport, minutes)
+    # col[22] = restr_leg, col[23] = traf_rest_str
+    # ⚠ DEDUP RULE: mkt_ind <= 1 = primary row (include); mkt_ind > 1 = codeshare/thru duplicate (exclude)
     conn.execute(f"""
         CREATE TABLE workset_base AS
         SELECT
@@ -371,23 +441,25 @@ def _load_base_data(conn, path: Path):
             column05                        AS arr_time,
             TRY_CAST(column06 AS INTEGER)   AS block_time,
             TRY_CAST(column07 AS INTEGER)   AS distance_mi,
-            column08                        AS op_airline,
+            column08                        AS mkt_airline,
             column09                        AS aircraft_type,
-            TRY_CAST(column10 AS INTEGER)   AS cap_total,
-            TRY_CAST(column11 AS FLOAT)     AS booked_pax,
-            TRY_CAST(column12 AS FLOAT)     AS demand_pax,
-            TRY_CAST(column14 AS FLOAT)     AS spill_pax,
+            TRY_CAST(column10 AS INTEGER)   AS apm_cap,
+            TRY_CAST(column11 AS FLOAT)     AS apm_dmd,
+            TRY_CAST(column12 AS FLOAT)     AS apm_pax,
+            TRY_CAST(column13 AS FLOAT)     AS apm_lpax,
+            TRY_CAST(column14 AS FLOAT)     AS apm_spill,
             TRY_CAST(column15 AS INTEGER)   AS day_of_week,
-            TRY_CAST(column16 AS INTEGER)   AS stops,
-            column18                        AS mkt_airline,
-            TRY_CAST(column20 AS INTEGER)   AS mct_dep,
-            TRY_CAST(column21 AS INTEGER)   AS mct_arr
+            TRY_CAST(column16 AS INTEGER)   AS mkt_ind,
+            column18                        AS op_airline,
+            TRY_CAST(column20 AS INTEGER)   AS dept_offset,
+            TRY_CAST(column21 AS INTEGER)   AS arrv_offset
         FROM read_csv('{_csv_path(path)}',
                       header=false, delim=',', null_padding=true,
                       all_varchar=true, parallel=true)
         WHERE column01 IS NOT NULL
           AND LENGTH(TRIM(column01)) = 3
           AND LENGTH(TRIM(column02)) = 3
+          AND TRY_CAST(column16 AS INTEGER) <= 1
     """)
     n = conn.execute("SELECT COUNT(*) FROM workset_base").fetchone()[0]
     logger.info(f"  workset_base: {n:,} rows")
@@ -414,6 +486,7 @@ def init_workset():
         _load_opp(conn,        wd / "data" / "opp.dat")
         _load_base_data(conn,  wd / "out"  / "BASEDATA.dat")
         _load_spill_data(conn, wd / "out"  / "SPILLDATA.dat")
+        _load_dashboard_outputs(conn, wd / "dashboard_output")
         _WORKSET_LOADED = True
         logger.info("Workset reference data ready.")
     except Exception as exc:
@@ -428,6 +501,999 @@ def init_workset():
 
 def is_loaded() -> bool:
     return _WORKSET_LOADED
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dashboard output CSV loader
+# ─────────────────────────────────────────────────────────────────────────────
+
+_DASHBOARD_LOADED = False
+
+_DASHBOARD_TABLES = [
+    ("dm_itin_report",    "itinerary_report_summary.csv"),
+    ("dm_flight_report",  "flight_report_summary.csv"),
+    ("dm_market_summary", "level2_od_airline_share_summary.csv"),
+    ("dm_network_summary","level1_host_od_summary.csv"),
+    ("dm_market_carrier", "market_carrier_summary.csv"),
+]
+
+
+def _parse_host_airline(workset_dir: Path, conn=None) -> str:
+    """
+    Detect the true host-airline IATA code from analysis.dat.
+
+    Strategy:
+      1. Extract the 2-letter prefix of the Analysis Name  (e.g. "FZW24_RS31" → "FZ").
+         This is what the workset was *named* after and is the display-facing IATA code.
+      2. Also read the HOSTALN= field (may be an internal surrogate, e.g. "S5" for FZ).
+      3. If both candidates differ *and* a DB connection is available, compare their
+         row counts in workset_base and prefer the one with more data — the real host's
+         own itineraries dominate that table.
+      4. Fall back gracefully to whichever candidate is non-empty.
+    """
+    try:
+        analysis = workset_dir / "data" / "analysis.dat"
+        if not analysis.exists():
+            return ""
+        hostaln = ""
+        analysis_prefix = ""
+        for line in analysis.read_text(errors="ignore").splitlines():
+            s = line.strip()
+            if s.startswith("Analysis Name:"):
+                # "Analysis Name: FZW24_RS31 Schedule Name: FZW24_HOST_RS ..."
+                parts = s.split()
+                if len(parts) >= 3:
+                    name = parts[2]           # e.g. "FZW24_RS31"
+                    if len(name) >= 2 and name[:2].isalpha():
+                        analysis_prefix = name[:2].upper()
+            elif s.startswith("HOSTALN="):
+                hostaln = s.split("=", 1)[1].strip()
+            if analysis_prefix and hostaln:
+                break                         # found both — no need to read further
+
+        # If they agree, or only one is present, return immediately
+        if not analysis_prefix:
+            return hostaln
+        if not hostaln or analysis_prefix == hostaln:
+            return analysis_prefix
+
+        # They differ (e.g. prefix="FZ", hostaln="S5") — use BASEDATA to decide
+        if conn is not None:
+            try:
+                rows = conn.execute(
+                    "SELECT UPPER(TRIM(mkt_airline)) AS aln, COUNT(*) AS c "
+                    "FROM workset_base WHERE UPPER(TRIM(mkt_airline)) IN (?, ?) "
+                    "GROUP BY 1",
+                    [analysis_prefix, hostaln],
+                ).fetchall()
+                counts = {r[0]: r[1] for r in rows}
+                prefix_cnt = counts.get(analysis_prefix, 0)
+                hostaln_cnt = counts.get(hostaln, 0)
+                logger.info(
+                    f"Host detection: analysis_prefix={analysis_prefix}({prefix_cnt} rows) "
+                    f"hostaln={hostaln}({hostaln_cnt} rows) → "
+                    f"{'analysis_prefix' if prefix_cnt >= hostaln_cnt else 'hostaln'} wins"
+                )
+                return analysis_prefix if prefix_cnt >= hostaln_cnt else hostaln
+            except Exception as exc:
+                logger.debug(f"Host detection DB query failed: {exc}")
+
+        # Default: trust the analysis name prefix (more stable display identifier)
+        return analysis_prefix
+    except Exception:
+        return ""
+
+
+def _generate_dashboard_from_raw(conn, workset_dir: Path) -> None:
+    """Generate dm_flight_report and dm_network_summary from workset_base when dashboard CSVs are absent."""
+    if not _table_exists(conn, "workset_base"):
+        return
+
+    host = _parse_host_airline(workset_dir, conn)
+
+    # ── Flight report ──────────────────────────────────────────────────────────
+    if not _table_exists(conn, "dm_flight_report"):
+        try:
+            has_spill = _table_exists(conn, "workset_spill")
+            # Pre-aggregate revenue from workset_spill per record_id (only if spill has fare columns)
+            if has_spill:
+                spill_cols = [c[1] for c in conn.execute("PRAGMA table_info(workset_spill)").fetchall()]
+                has_fare = "fare_HO" in spill_cols and "total_revenue" in spill_cols
+            else:
+                has_fare = False
+
+            if has_fare:
+                rev_cte = """
+                    leg_rev AS (
+                        SELECT baseIndex_l1 AS record_id, SUM(total_revenue) AS rev
+                        FROM workset_spill
+                        WHERE is_codeshare = 0
+                        GROUP BY baseIndex_l1
+                    )
+                """
+                rev_join = "LEFT JOIN leg_rev lr ON workset_base.record_id = lr.record_id"
+                rev_col = "CAST(ROUND(SUM(COALESCE(lr.rev, 0))) AS VARCHAR)"
+                yield_col = """CASE
+                    WHEN SUM(apm_pax) > 0 AND MAX(distance_mi) > 0
+                    THEN CAST(ROUND(SUM(COALESCE(lr.rev, 0)) / NULLIF(SUM(apm_pax) * MAX(distance_mi) * 1.60934, 0) * 100, 2) AS VARCHAR)
+                    ELSE '' END"""
+            else:
+                rev_cte = ""
+                rev_join = ""
+                rev_col = "''"
+                yield_col = "''"
+
+            cte_prefix = f"WITH {rev_cte}" if rev_cte.strip() else ""
+
+            conn.execute(f"""
+                CREATE TABLE dm_flight_report AS
+                {cte_prefix}
+                SELECT
+                    UPPER(TRIM(origin))       AS "Dept Sta",
+                    UPPER(TRIM(dest))         AS "Arvl Sta",
+                    UPPER(TRIM(mkt_airline)) || '  ' || TRIM(flight_num) AS "Flt Desg",
+                    -- day_of_week: 0=Sun,1=Mon,2=Tue,3=Wed,4=Thu,5=Fri,6=Sat (SUNDAY-FIRST)
+                    -- IATA freq: position 1=Mon..7=Sun → map dow 1→'1',2→'2',...,6→'6',0→'7'
+                    CASE WHEN MAX(CASE WHEN day_of_week=1 THEN 1 ELSE 0 END)=1 THEN '1' ELSE '.' END ||
+                    CASE WHEN MAX(CASE WHEN day_of_week=2 THEN 1 ELSE 0 END)=1 THEN '2' ELSE '.' END ||
+                    CASE WHEN MAX(CASE WHEN day_of_week=3 THEN 1 ELSE 0 END)=1 THEN '3' ELSE '.' END ||
+                    CASE WHEN MAX(CASE WHEN day_of_week=4 THEN 1 ELSE 0 END)=1 THEN '4' ELSE '.' END ||
+                    CASE WHEN MAX(CASE WHEN day_of_week=5 THEN 1 ELSE 0 END)=1 THEN '5' ELSE '.' END ||
+                    CASE WHEN MAX(CASE WHEN day_of_week=6 THEN 1 ELSE 0 END)=1 THEN '6' ELSE '.' END ||
+                    CASE WHEN MAX(CASE WHEN day_of_week=0 THEN 1 ELSE 0 END)=1 THEN '7' ELSE '.' END
+                                              AS "Freq",
+                    MAX(dep_time)             AS "Dept Time",
+                    MAX(arr_time)             AS "Arvl Time",
+                    LPAD(CAST(MAX(TRY_CAST(block_time AS BIGINT)) // 60 AS VARCHAR),2,'0') || ':' ||
+                    LPAD(CAST(MAX(TRY_CAST(block_time AS BIGINT)) % 60 AS VARCHAR),2,'0') AS "Elap Time",
+                    -- Stops = 0 for all single-leg records in workset_base
+                    0                                                   AS "Stops",
+                    -- Subfleet = "AIRLINE TYPE" e.g. "FZ 7M8R"
+                    UPPER(TRIM(mkt_airline)) || ' ' || TRIM(aircraft_type) AS "Subfleet",
+                    -- Weekly totals (SUM over all operating days in the week)
+                    CAST(SUM(apm_cap) AS VARCHAR)                      AS "Seats",
+                    CAST(ROUND(MAX(distance_mi) * 1.60934) AS VARCHAR) AS "Distance(km)",
+                    CAST(ROUND(SUM(apm_dmd), 1) AS VARCHAR) AS "Total Demand",
+                    CAST(ROUND(SUM(apm_pax), 1) AS VARCHAR) AS "Total Traffic",
+                    -- Lcl Demand ≈ lpax × (dmd/pax) — always ≥ Lcl Traffic (logical floor)
+                    CAST(ROUND(SUM(
+                        GREATEST(apm_lpax,
+                            CASE WHEN apm_pax > 0 THEN apm_lpax * apm_dmd / apm_pax ELSE apm_lpax END)
+                    ), 1) AS VARCHAR) AS "Lcl Demand (Mktd)",
+                    -- Lcl Traffic = local pax who actually boarded (weekly total)
+                    CAST(ROUND(SUM(apm_lpax), 1) AS VARCHAR) AS "Lcl Traffic",
+                    -- LF = weekly pax / weekly seats × 100
+                    CAST(ROUND(
+                        LEAST(100.0,
+                            SUM(apm_pax) / NULLIF(SUM(CAST(apm_cap AS FLOAT)), 0) * 100
+                        )
+                    , 1) AS VARCHAR)          AS "Load Factor (%)",
+                    -- Pax Revenue = sum(traffic × fare) from workset_spill, aggregated per leg
+                    {rev_col}                 AS "Pax Revenue($)",
+                    {yield_col}               AS "Total Yield(Cents per RPk)",
+                    'Y'                       AS "Op/Nonop Flight",
+                    ''                        AS "Applied A/C Config"
+                FROM workset_base
+                {rev_join}
+                WHERE mkt_airline IS NOT NULL AND LENGTH(TRIM(mkt_airline)) > 0
+                GROUP BY origin, dest, mkt_airline, flight_num, aircraft_type
+                ORDER BY origin, dest, mkt_airline, flight_num
+            """)
+            n = conn.execute("SELECT COUNT(*) FROM dm_flight_report").fetchone()[0]
+            logger.info(f"  dm_flight_report (generated): {n:,} rows")
+        except Exception as exc:
+            logger.error(f"Failed to generate dm_flight_report: {exc}")
+
+    # ── Network summary (host OD pairs) ───────────────────────────────────────
+    if not _table_exists(conn, "dm_network_summary"):
+        try:
+            host_filter = f"AND UPPER(TRIM(mkt_airline)) = '{host}'" if host else ""
+            conn.execute(f"""
+                CREATE TABLE dm_network_summary AS
+                SELECT
+                    UPPER(TRIM(origin))  AS orig,
+                    UPPER(TRIM(dest))    AS dest,
+                    COUNT(DISTINCT flight_num || dep_time) AS weekly_departures,
+                    -- Weekly totals: SUM across all day rows (each row = 1 departure)
+                    CAST(ROUND(SUM(apm_pax),  0) AS VARCHAR) AS weekly_pax_est,
+                    CAST(ROUND(SUM(apm_lpax), 0) AS VARCHAR) AS apm_weekly_pax_est,
+                    CAST(ROUND(SUM(apm_dmd),  0) AS VARCHAR) AS market_weekly_demand,
+                    -- Host share: host pax / total demand (as %)
+                    CAST(ROUND(
+                        LEAST(100.0, SUM(apm_pax) / NULLIF(SUM(apm_dmd), 0) * 100)
+                    , 1) AS VARCHAR)           AS host_share_of_market_demand_pct_est,
+                    -- Load factor: aggregate pax/cap (not row-by-row average)
+                    CAST(ROUND(
+                        LEAST(100.0, SUM(apm_pax) / NULLIF(SUM(CAST(apm_cap AS FLOAT)), 0) * 100)
+                    , 1) AS VARCHAR)           AS load_factor_pct_est,
+                    CAST(ROUND(
+                        LEAST(100.0, SUM(apm_lpax) / NULLIF(SUM(CAST(apm_cap AS FLOAT)), 0) * 100)
+                    , 1) AS VARCHAR)           AS apm_load_factor_pct_est,
+                    -- Flow pax % of total pax (cap local at pax to avoid negative flow)
+                    CAST(ROUND(
+                        GREATEST(0.0, LEAST(100.0,
+                            (SUM(apm_pax) - SUM(LEAST(apm_lpax, apm_pax))) / NULLIF(SUM(apm_pax), 0) * 100
+                        ))
+                    , 1) AS VARCHAR)           AS flow_pdd_pct_est,
+                    ''                         AS abs_total_pax_diff_pct_est,
+                    ''                         AS abs_plf_diff_pct_est
+                FROM workset_base
+                WHERE mkt_airline IS NOT NULL AND LENGTH(TRIM(mkt_airline)) > 0
+                {host_filter}
+                GROUP BY origin, dest
+                ORDER BY SUM(apm_pax) DESC
+            """)
+            n = conn.execute("SELECT COUNT(*) FROM dm_network_summary").fetchone()[0]
+            logger.info(f"  dm_network_summary (generated): {n:,} rows  host={host or 'all'}")
+        except Exception as exc:
+            logger.error(f"Failed to generate dm_network_summary: {exc}")
+
+    # ── Market summary (O&D level, per airline) ───────────────────────────────
+    if not _table_exists(conn, "dm_market_summary") and _table_exists(conn, "workset_spill"):
+        try:
+            host_case = f"CASE WHEN UPPER(TRIM(carrier)) = '{host}' THEN 'True' ELSE 'False' END" if host else "'False'"
+            conn.execute(f"""
+                CREATE TABLE dm_market_summary AS
+                WITH airline_stats AS (
+                    SELECT
+                        UPPER(TRIM(market_origin)) AS orig,
+                        UPPER(TRIM(market_dest))   AS dest,
+                        UPPER(TRIM(airline))       AS carrier,
+                        -- Count distinct nonstop vs connecting itinerary options
+                        COUNT(DISTINCT CASE WHEN stops = 0 THEN baseIndex_l1 END)
+                            AS nonstop_itinerary_count,
+                        COUNT(DISTINCT CASE WHEN stops > 0 THEN baseIndex_l1 END)
+                            AS single_connect_itinerary_count,
+                        -- Per-departure averages across operating days
+                        ROUND(SUM(total_demand + COALESCE(total_spill, 0))
+                              / NULLIF(COUNT(DISTINCT day_of_week), 0), 1) AS total_demand_est,
+                        ROUND(SUM(total_pax)
+                              / NULLIF(COUNT(DISTINCT day_of_week), 0), 1) AS total_traffic_est,
+                        ROUND(SUM(total_revenue)
+                              / NULLIF(COUNT(DISTINCT day_of_week), 0), 1) AS total_revenue_est
+                    FROM workset_spill
+                    WHERE airline IS NOT NULL AND LENGTH(TRIM(airline)) >= 2
+                      AND is_codeshare = 0
+                    GROUP BY market_origin, market_dest, airline
+                ),
+                market_totals AS (
+                    SELECT orig, dest,
+                           SUM(total_demand_est)  AS mkt_dmd,
+                           SUM(total_traffic_est) AS mkt_pax,
+                           SUM(total_revenue_est) AS mkt_rev
+                    FROM airline_stats
+                    GROUP BY orig, dest
+                )
+                SELECT
+                    a.orig, a.dest, a.carrier,
+                    {host_case}                                                         AS is_host_airline,
+                    CAST(a.nonstop_itinerary_count        AS VARCHAR)                  AS nonstop_itinerary_count,
+                    CAST(a.single_connect_itinerary_count AS VARCHAR)                  AS single_connect_itinerary_count,
+                    a.total_demand_est,
+                    ROUND(a.total_demand_est  / NULLIF(m.mkt_dmd, 0) * 100, 1)        AS demand_share_pct_est,
+                    a.total_traffic_est,
+                    ROUND(a.total_traffic_est / NULLIF(m.mkt_pax, 0) * 100, 1)        AS traffic_share_pct_est,
+                    a.total_revenue_est,
+                    ROUND(a.total_revenue_est / NULLIF(m.mkt_rev, 0) * 100, 1)        AS revenue_share_pct_est
+                FROM airline_stats a
+                JOIN market_totals m ON a.orig = m.orig AND a.dest = m.dest
+                ORDER BY a.orig, a.dest, a.total_traffic_est DESC
+            """)
+            n = conn.execute("SELECT COUNT(*) FROM dm_market_summary").fetchone()[0]
+            logger.info(f"  dm_market_summary (generated): {n:,} rows")
+        except Exception as exc:
+            logger.error(f"Failed to generate dm_market_summary: {exc}")
+
+    # ── dm_itin_report is generated on-demand per OD in get_itin_report() ─────
+    # (Not pre-built at startup: too slow on large worksets with 2M+ spill rows)
+
+    profile_path = workset_dir / "dashboard_output" / "workset_profile.json"
+    if host:
+        try:
+            import json as _json
+            profile_path.parent.mkdir(parents=True, exist_ok=True)
+            profile_path.write_text(_json.dumps({
+                "host_airline": host,
+                "workset_id": workset_dir.name,
+                "generated_from_raw": True
+            }))
+            logger.info(f"  workset_profile.json written  host={host}")
+        except Exception as exc:
+            logger.warning(f"Could not write workset_profile.json: {exc}")
+
+
+def _load_dashboard_outputs(conn, dashboard_dir: Path) -> None:
+    global _DASHBOARD_LOADED
+    if _DASHBOARD_LOADED:
+        return
+    for tbl, fname in _DASHBOARD_TABLES:
+        csv_p = dashboard_dir / fname
+        if not csv_p.exists():
+            logger.warning(f"Dashboard CSV missing: {csv_p}")
+            continue
+        if _table_exists(conn, tbl):
+            continue
+        try:
+            conn.execute(f"""
+                CREATE TABLE {tbl} AS
+                SELECT * FROM read_csv('{_csv_path(csv_p)}',
+                             header=true, delim=',',
+                             null_padding=true, all_varchar=true)
+            """)
+            n = conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+            logger.info(f"  {tbl}: {n:,} rows")
+        except Exception as exc:
+            logger.error(f"Failed to load {tbl}: {exc}")
+    # Fall back to generating from raw workset data when CSVs are absent
+    _generate_dashboard_from_raw(conn, dashboard_dir.parent)
+    _DASHBOARD_LOADED = True
+
+
+def init_dashboard():
+    """Load dashboard CSV outputs into DuckDB. Idempotent."""
+    wd = _get_workset_dir()
+    conn = get_connection()
+    _load_dashboard_outputs(conn, wd / "dashboard_output")
+
+
+def rebuild_dm_tables() -> dict:
+    """Drop and regenerate all dm_* tables from workset_base/workset_spill.
+    Use after schema fixes to force fresh regeneration without full restart."""
+    global _DASHBOARD_LOADED
+    conn = get_connection()
+    dropped = []
+    for tbl in ("dm_flight_report", "dm_network_summary", "dm_market_summary"):
+        if _table_exists(conn, tbl):
+            try:
+                conn.execute(f"DROP TABLE {tbl}")
+                dropped.append(tbl)
+                logger.info(f"Dropped {tbl} for rebuild")
+            except Exception as exc:
+                logger.warning(f"Could not drop {tbl}: {exc}")
+    _DASHBOARD_LOADED = False
+    wd = _get_workset_dir()
+    _generate_dashboard_from_raw(conn, wd)
+    _DASHBOARD_LOADED = True
+    rebuilt = []
+    errors = []
+    for tbl in ("dm_flight_report", "dm_network_summary", "dm_market_summary"):
+        if _table_exists(conn, tbl):
+            n = conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+            rebuilt.append({"table": tbl, "rows": n})
+        else:
+            try:
+                conn.execute(f"SELECT 1 FROM {tbl} LIMIT 1")
+            except Exception as exc:
+                errors.append(f"{tbl}: {exc}")
+            rebuilt.append({"table": tbl, "rows": None, "status": "not_created"})
+    result: dict = {"dropped": dropped, "rebuilt": rebuilt}
+    if errors:
+        result["errors"] = errors
+    return result
+
+
+def dashboard_is_ready() -> bool:
+    conn = get_connection()
+    return _table_exists(conn, "dm_flight_report")
+
+
+def get_dashboard_profile() -> dict:
+    """Return workset profile JSON if available."""
+    wd = _get_workset_dir()
+    profile_path = wd / "dashboard_output" / "workset_profile.json"
+    if not profile_path.exists():
+        return {}
+    import json
+    try:
+        return json.loads(profile_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def get_workset_hints() -> dict:
+    """
+    Query live workset tables to extract contextual hints:
+    top airports, top routes, top O&D pairs, and top competing airlines.
+    Used to make personas and suggestion chips workset-aware.
+    """
+    conn = get_connection()
+    hints: dict = {
+        "top_airports": [],
+        "top_routes": [],
+        "top_ods": [],
+        "top_competitors": [],
+    }
+
+    # ── Top airports by flight count ─────────────────────────────────────────
+    if _table_exists(conn, "dm_flight_report"):
+        try:
+            profile = get_dashboard_profile()
+            host = (profile.get("host_airline") or "").upper()
+
+            rows = conn.execute(
+                'SELECT "Dept Sta", COUNT(*) AS cnt FROM dm_flight_report '
+                'GROUP BY "Dept Sta" ORDER BY cnt DESC LIMIT 5'
+            ).fetchall()
+            hints["top_airports"] = [r[0] for r in rows if r[0]]
+
+            # Top routes (dept→arvl) by flight count
+            route_rows = conn.execute(
+                'SELECT "Dept Sta", "Arvl Sta", COUNT(*) AS cnt FROM dm_flight_report '
+                'GROUP BY "Dept Sta","Arvl Sta" ORDER BY cnt DESC LIMIT 6'
+            ).fetchall()
+            hints["top_routes"] = [f"{r[0]}-{r[1]}" for r in route_rows if r[0] and r[1]]
+
+            # Top O&D pairs (alphabetically normalised to avoid duplicates)
+            od_rows = conn.execute(
+                'SELECT "Dept Sta", "Arvl Sta", COUNT(*) AS cnt FROM dm_flight_report '
+                'GROUP BY "Dept Sta","Arvl Sta" ORDER BY cnt DESC LIMIT 3'
+            ).fetchall()
+            hints["top_ods"] = [f"{r[0]}-{r[1]}" for r in od_rows if r[0] and r[1]]
+
+            # Top competing airlines (excluding host) by flight count
+            comp_rows = conn.execute(
+                'SELECT SUBSTR("Flt Desg", 1, 2) AS al, COUNT(*) AS cnt FROM dm_flight_report '
+                'WHERE SUBSTR("Flt Desg", 1, 2) != ? '
+                'GROUP BY al ORDER BY cnt DESC LIMIT 4',
+                [host]
+            ).fetchall()
+            hints["top_competitors"] = [r[0] for r in comp_rows if r[0]]
+        except Exception as exc:
+            logger.debug(f"get_workset_hints flight_report query failed: {exc}")
+
+    # ── Top O&D pairs by demand (from network summary) ───────────────────────
+    if _table_exists(conn, "dm_network_summary") and not hints["top_ods"]:
+        try:
+            nd_rows = conn.execute(
+                "SELECT orig, dest FROM dm_network_summary "
+                "ORDER BY TRY_CAST(market_weekly_demand AS FLOAT) DESC NULLS LAST LIMIT 3"
+            ).fetchall()
+            hints["top_ods"] = [f"{r[0]}-{r[1]}" for r in nd_rows if r[0] and r[1]]
+        except Exception as exc:
+            logger.debug(f"get_workset_hints network_summary query failed: {exc}")
+
+    return hints
+
+
+def _rows_from_table(tbl: str, conditions: list, params: list) -> list:
+    conn = get_connection()
+    if not _table_exists(conn, tbl):
+        return []
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    try:
+        rows = conn.execute(f"SELECT * FROM {tbl} {where}", params).fetchall()
+        cols = [d[0] for d in conn.description]
+        return [dict(zip(cols, r)) for r in rows]
+    except Exception as exc:
+        logger.warning(f"Query {tbl} failed: {exc}")
+        return []
+
+
+def get_network_summary(top_n: int = 200) -> list:
+    conn = get_connection()
+    if not _table_exists(conn, "dm_network_summary"):
+        return []
+    try:
+        rows = conn.execute(
+            f"SELECT * FROM dm_network_summary ORDER BY TRY_CAST(market_weekly_demand AS FLOAT) DESC NULLS LAST LIMIT ?",
+            [top_n]
+        ).fetchall()
+        cols = [d[0] for d in conn.description]
+        return [dict(zip(cols, r)) for r in rows]
+    except Exception as exc:
+        logger.warning(f"get_network_summary failed: {exc}")
+        return []
+
+
+def get_flight_report(orig: str = "", dest: str = "", carrier: str = "", top_n: int = 500) -> list:
+    conn = get_connection()
+    if not _table_exists(conn, "dm_flight_report"):
+        return []
+    conds, params = [], []
+    if orig:
+        conds.append('"Dept Sta" = ?'); params.append(orig.upper())
+    if dest:
+        conds.append('"Arvl Sta" = ?'); params.append(dest.upper())
+    if carrier:
+        conds.append('"Flt Desg" LIKE ?'); params.append(f"{carrier.upper()}%")
+    where = ("WHERE " + " AND ".join(conds)) if conds else ""
+    try:
+        rows = conn.execute(
+            f'SELECT * FROM dm_flight_report {where} ORDER BY "Dept Sta","Arvl Sta","Flt Desg" LIMIT ?',
+            params + [top_n]
+        ).fetchall()
+        cols = [d[0] for d in conn.description]
+        return [dict(zip(cols, r)) for r in rows]
+    except Exception as exc:
+        logger.warning(f"get_flight_report failed: {exc}")
+        return []
+
+
+def get_flight_count(orig: str = "", dest: str = "", carrier: str = "") -> int:
+    """Return total number of rows in dm_flight_report matching the filters (no LIMIT)."""
+    conn = get_connection()
+    if not _table_exists(conn, "dm_flight_report"):
+        return 0
+    conds, params = [], []
+    if orig:
+        conds.append('"Dept Sta" = ?'); params.append(orig.upper())
+    if dest:
+        conds.append('"Arvl Sta" = ?'); params.append(dest.upper())
+    if carrier:
+        conds.append('"Flt Desg" LIKE ?'); params.append(f"{carrier.upper()}%")
+    where = ("WHERE " + " AND ".join(conds)) if conds else ""
+    try:
+        row = conn.execute(f'SELECT COUNT(*) FROM dm_flight_report {where}', params).fetchone()
+        return int(row[0]) if row else 0
+    except Exception as exc:
+        logger.warning(f"get_flight_count failed: {exc}")
+        return 0
+
+
+def get_flight_kpis(orig: str = "", dest: str = "", carrier: str = "") -> dict:
+    """
+    Return pre-aggregated KPIs from ALL rows in dm_flight_report matching the filters.
+    Uses SQL SUM/AVG/COUNT — never touches the top_n cap, so numbers are always correct.
+    Also returns the top 6 routes by total demand.
+    """
+    conn = get_connection()
+    if not _table_exists(conn, "dm_flight_report"):
+        return {}
+    conds, params = [], []
+    if orig:
+        conds.append('"Dept Sta" = ?'); params.append(orig.upper())
+    if dest:
+        conds.append('"Arvl Sta" = ?'); params.append(dest.upper())
+    if carrier:
+        conds.append('"Flt Desg" LIKE ?'); params.append(f"{carrier.upper()}%")
+    where = ("WHERE " + " AND ".join(conds)) if conds else ""
+    try:
+        agg = conn.execute(
+            f'''SELECT
+                  COUNT(*)                                          AS total_flights,
+                  COALESCE(SUM(TRY_CAST("Seats" AS BIGINT)), 0)    AS total_seats,
+                  COALESCE(SUM(TRY_CAST("Total Demand" AS DOUBLE)), 0) AS total_demand,
+                  COALESCE(SUM(TRY_CAST("Pax Revenue($)" AS DOUBLE)), 0) AS total_revenue,
+                  COALESCE(AVG(TRY_CAST("Load Factor (%)" AS DOUBLE)), 0) AS avg_lf,
+                  COUNT(DISTINCT "Dept Sta" || \'-\' || "Arvl Sta") AS route_count
+               FROM dm_flight_report {where}''',
+            params
+        ).fetchone()
+        kpis = {
+            "total_flights": int(agg[0]) if agg else 0,
+            "total_seats":   int(agg[1]) if agg else 0,
+            "total_demand":  float(agg[2]) if agg else 0.0,
+            "total_revenue": float(agg[3]) if agg else 0.0,
+            "avg_lf":        round(float(agg[4]), 2) if agg else 0.0,
+            "route_count":   int(agg[5]) if agg else 0,
+        }
+        # Top 6 routes by demand
+        top_rows = conn.execute(
+            f'''SELECT "Dept Sta" || \' → \' || "Arvl Sta" AS route,
+                       SUM(TRY_CAST("Total Demand" AS DOUBLE)) AS dem
+               FROM dm_flight_report {where}
+               GROUP BY "Dept Sta", "Arvl Sta"
+               ORDER BY dem DESC NULLS LAST
+               LIMIT 6''',
+            params
+        ).fetchall()
+        kpis["top_routes"] = [r[0] for r in top_rows]
+        return kpis
+    except Exception as exc:
+        logger.warning(f"get_flight_kpis failed: {exc}")
+        return {}
+
+
+def get_market_summary(orig: str = "", dest: str = "") -> list:
+    conn = get_connection()
+    if not _table_exists(conn, "dm_market_summary"):
+        return []
+    conds, params = [], []
+    if orig:
+        conds.append("orig = ?"); params.append(orig.upper())
+    if dest:
+        conds.append("dest = ?"); params.append(dest.upper())
+    where = ("WHERE " + " AND ".join(conds)) if conds else ""
+    try:
+        rows = conn.execute(
+            f"SELECT * FROM dm_market_summary {where} ORDER BY TRY_CAST(traffic_share_pct_est AS FLOAT) DESC NULLS LAST",
+            params
+        ).fetchall()
+        cols = [d[0] for d in conn.description]
+        return [dict(zip(cols, r)) for r in rows]
+    except Exception as exc:
+        logger.warning(f"get_market_summary failed: {exc}")
+        return []
+
+
+def get_itin_report(orig: str = "", dest: str = "", carrier: str = "", top_n: int = 500) -> list:
+    conn = get_connection()
+
+    # ── Fast path: pre-built table (legacy CSV worksets) ──────────────────────
+    if _table_exists(conn, "dm_itin_report"):
+        conds, params = [], []
+        if orig:
+            conds.append('"Dept Arp" = ?'); params.append(orig.upper())
+        if dest:
+            conds.append('"Arvl Arp" = ?'); params.append(dest.upper())
+        if carrier:
+            conds.append('"Flt Desg (Seg1)" LIKE ?'); params.append(f"{carrier.upper()}%")
+        where = ("WHERE " + " AND ".join(conds)) if conds else ""
+        try:
+            rows = conn.execute(
+                f'SELECT * FROM dm_itin_report {where} ORDER BY "Dept Arp","Arvl Arp","Flt Desg (Seg1)" LIMIT ?',
+                params + [top_n]
+            ).fetchall()
+            cols = [d[0] for d in conn.description]
+            return [dict(zip(cols, r)) for r in rows]
+        except Exception as exc:
+            logger.warning(f"get_itin_report (pre-built) failed: {exc}")
+
+    # ── Live path: query workset_spill + workset_base on demand ───────────────
+    if not (_table_exists(conn, "workset_spill") and _table_exists(conn, "workset_base")):
+        return []
+
+    try:
+        od_conds, params = [], []
+        if orig:
+            od_conds.append("UPPER(TRIM(s.market_origin)) = ?"); params.append(orig.upper())
+        if dest:
+            od_conds.append("UPPER(TRIM(s.market_dest)) = ?");   params.append(dest.upper())
+        od_where = ("AND " + " AND ".join(od_conds)) if od_conds else ""
+        carrier_where = f"AND UPPER(TRIM(s.airline)) = '{carrier.upper()}'" if carrier else ""
+
+        rows = conn.execute(f"""
+            WITH raw AS (
+                -- Join spill with base legs to get flight identifiers (not per-day IDs)
+                SELECT
+                    UPPER(TRIM(s.market_origin))  AS mkt_orig,
+                    UPPER(TRIM(s.market_dest))    AS mkt_dest,
+                    UPPER(TRIM(s.airline))        AS airline,
+                    s.stops,
+                    s.day_of_week,
+                    s.total_demand,
+                    s.total_pax,
+                    s.block_time,
+                    s.total_revenue,
+                    -- Seg1 identity: airline+flight+dep_time (stable across days)
+                    UPPER(TRIM(wb1.mkt_airline)) || ' ' || TRIM(wb1.flight_num)  AS seg1,
+                    wb1.dep_time   AS dep1,
+                    wb1.arr_time   AS arr1,
+                    UPPER(TRIM(wb1.dest))          AS cp1,
+                    -- Seg2
+                    CASE WHEN COALESCE(s.baseIndex_l2,0) > 0
+                         THEN UPPER(TRIM(wb2.mkt_airline)) || ' ' || TRIM(wb2.flight_num) ELSE '*' END AS seg2,
+                    CASE WHEN COALESCE(s.baseIndex_l2,0) > 0 THEN wb2.dep_time ELSE NULL END  AS dep2,
+                    CASE WHEN COALESCE(s.baseIndex_l2,0) > 0 THEN wb2.arr_time ELSE NULL END  AS arr2,
+                    CASE WHEN COALESCE(s.baseIndex_l3,0) > 0 THEN UPPER(TRIM(wb2.dest)) ELSE '*' END  AS cp2,
+                    -- Seg3
+                    CASE WHEN COALESCE(s.baseIndex_l3,0) > 0
+                         THEN UPPER(TRIM(wb3.mkt_airline)) || ' ' || TRIM(wb3.flight_num) ELSE '*' END AS seg3,
+                    CASE WHEN COALESCE(s.baseIndex_l3,0) > 0 THEN wb3.arr_time ELSE NULL END  AS arr3
+                FROM workset_spill s
+                LEFT JOIN workset_base wb1 ON wb1.record_id = s.baseIndex_l1
+                LEFT JOIN workset_base wb2 ON COALESCE(s.baseIndex_l2,0) > 0
+                                           AND wb2.record_id = s.baseIndex_l2
+                LEFT JOIN workset_base wb3 ON COALESCE(s.baseIndex_l3,0) > 0
+                                           AND wb3.record_id = s.baseIndex_l3
+                WHERE s.airline IS NOT NULL AND LENGTH(TRIM(s.airline)) >= 2
+                  AND COALESCE(s.total_pax, 0) > 0
+                  AND s.is_codeshare = 0
+                  AND wb1.record_id IS NOT NULL
+                  {od_where} {carrier_where}
+            )
+            SELECT
+                mkt_orig    AS "Dept Arp",
+                mkt_dest    AS "Arvl Arp",
+                seg1        AS "Flt Desg (Seg1)",
+                CASE WHEN stops >= 1 THEN cp1 ELSE '*' END                  AS "Connect Point 1",
+                '*'                                                          AS "Minimum Connect Time 1",
+                CASE WHEN stops >= 1 AND MAX(dep2) IS NOT NULL AND MAX(arr1) IS NOT NULL THEN
+                    CAST(
+                        (TRY_CAST(SUBSTR(MAX(dep2),1,2) AS INTEGER)*60 + TRY_CAST(SUBSTR(MAX(dep2),3,2) AS INTEGER)) -
+                        (TRY_CAST(SUBSTR(MAX(arr1),1,2) AS INTEGER)*60 + TRY_CAST(SUBSTR(MAX(arr1),3,2) AS INTEGER))
+                    AS VARCHAR)
+                ELSE '*' END                                                 AS "Connect Time 1",
+                CASE WHEN stops >= 1 THEN seg2 ELSE '*' END                 AS "Flt Desg (Seg2)",
+                CASE WHEN stops >= 2 THEN cp2  ELSE '*' END                 AS "Connect Point 2",
+                '*'                                                          AS "Minimum Connect Time 2",
+                '*'                                                          AS "Connect Time 2",
+                CASE WHEN stops >= 2 THEN seg3 ELSE '*' END                 AS "Flt Desg (Seg3)",
+                stops                                                        AS "Stops",
+                stops + 1                                                    AS "Segs",
+                -- SSIM 7-char freq: 0=Sun,1=Mon,...,6=Sat → IATA 1=Mon..7=Sun
+                CASE WHEN MAX(CASE WHEN day_of_week=1 THEN 1 ELSE 0 END)=1 THEN '1' ELSE '.' END ||
+                CASE WHEN MAX(CASE WHEN day_of_week=2 THEN 1 ELSE 0 END)=1 THEN '2' ELSE '.' END ||
+                CASE WHEN MAX(CASE WHEN day_of_week=3 THEN 1 ELSE 0 END)=1 THEN '3' ELSE '.' END ||
+                CASE WHEN MAX(CASE WHEN day_of_week=4 THEN 1 ELSE 0 END)=1 THEN '4' ELSE '.' END ||
+                CASE WHEN MAX(CASE WHEN day_of_week=5 THEN 1 ELSE 0 END)=1 THEN '5' ELSE '.' END ||
+                CASE WHEN MAX(CASE WHEN day_of_week=6 THEN 1 ELSE 0 END)=1 THEN '6' ELSE '.' END ||
+                CASE WHEN MAX(CASE WHEN day_of_week=0 THEN 1 ELSE 0 END)=1 THEN '7' ELSE '.' END
+                                                                             AS "Freq",
+                MAX(dep1)[1:2] || ':' || MAX(dep1)[3:4]                     AS "Dept Time",
+                COALESCE(MAX(arr3), MAX(arr2), MAX(arr1))[1:2] || ':' ||
+                COALESCE(MAX(arr3), MAX(arr2), MAX(arr1))[3:4]              AS "Arvl Time",
+                LPAD(CAST(CAST(MAX(block_time) / 60 AS INTEGER) AS VARCHAR), 2, '0') || ':' ||
+                LPAD(CAST(CAST(MAX(block_time) % 60 AS INTEGER) AS VARCHAR), 2, '0')        AS "Elap Time",
+                -- Weekly totals: SUM over all operating days (not per-departure averages)
+                ROUND(SUM(total_demand), 1) AS "Total Demand",
+                ROUND(SUM(total_pax), 1)    AS "Total Traffic",
+                CAST(ROUND(SUM(total_revenue)) AS VARCHAR) AS "Pax Revenue($)"
+            FROM raw
+            GROUP BY
+                mkt_orig, mkt_dest, airline, stops,
+                seg1, cp1, dep1, arr1,
+                seg2, dep2, arr2, cp2,
+                seg3, arr3
+            ORDER BY mkt_orig, mkt_dest, stops, seg1
+            LIMIT {top_n}
+        """, params).fetchall()
+        cols = [d[0] for d in conn.description]
+        return [dict(zip(cols, r)) for r in rows]
+    except Exception as exc:
+        logger.warning(f"get_itin_report (live) failed: {exc}")
+        return []
+
+
+def get_route_market_report(orig: str, dest: str, top_n: int = 200) -> list:
+    """Market Report for a route — all O&D markets whose pax flow through orig→dest.
+
+    Matches the PMCal 'flow_traf-report-market' CSV columns:
+      Market | Market Size | Total Demand | Total Traffic |
+      Prorated Revenue (to leg) ($) | Prorated Revenue (beyond) ($) |
+      Avg OD Fare ($) | Avg Prorated Revenue ($) | Spill
+    """
+    conn = get_connection()
+    if not (_table_exists(conn, "workset_spill") and _table_exists(conn, "workset_base")):
+        return []
+    o, d = orig.upper().strip(), dest.upper().strip()
+    try:
+        # Fetch route record_ids as a Python list first (very fast, small result)
+        id_rows = conn.execute(
+            "SELECT record_id FROM workset_base WHERE UPPER(TRIM(origin)) = ? AND UPPER(TRIM(dest)) = ?",
+            [o, d]
+        ).fetchall()
+        if not id_rows:
+            return []
+        ids_str = ",".join(str(r[0]) for r in id_rows)
+
+        rows = conn.execute(f"""
+            WITH route_spill AS (
+                SELECT
+                    UPPER(TRIM(s.market_origin)) AS mkt_orig,
+                    UPPER(TRIM(s.market_dest))   AS mkt_dest,
+                    s.total_demand, s.total_pax, s.total_spill, s.total_revenue
+                FROM workset_spill s
+                WHERE s.is_codeshare = 0
+                  AND COALESCE(s.total_pax, 0) > 0
+                  AND (s.baseIndex_l1 IN ({ids_str})
+                    OR s.baseIndex_l2 IN ({ids_str})
+                    OR s.baseIndex_l3 IN ({ids_str}))
+            ),
+            aggregated AS (
+                SELECT
+                    mkt_orig || mkt_dest         AS mkt,
+                    mkt_orig, mkt_dest,
+                    ROUND(SUM(total_demand), 1)  AS tot_demand,
+                    ROUND(SUM(total_pax), 1)     AS tot_pax,
+                    ROUND(SUM(total_spill), 2)   AS tot_spill,
+                    ROUND(SUM(total_revenue), 0) AS tot_rev
+                FROM route_spill
+                GROUP BY mkt_orig, mkt_dest
+            )
+            SELECT
+                a.mkt                            AS "Market",
+                CAST(COALESCE(
+                    (SELECT ROUND(SUM(total_demand + COALESCE(total_spill, 0)))
+                     FROM workset_spill
+                     WHERE is_codeshare = 0
+                       AND UPPER(TRIM(market_origin)) = a.mkt_orig
+                       AND UPPER(TRIM(market_dest))   = a.mkt_dest), 0) AS INTEGER)
+                                                 AS "Market Size",
+                a.tot_demand                     AS "Total Demand",
+                a.tot_pax                        AS "Total Traffic",
+                CAST(a.tot_rev AS VARCHAR)       AS "Prorated Revenue (to leg) ($)",
+                ''                               AS "Prorated Revenue (beyond) ($)",
+                CAST(ROUND(a.tot_rev / NULLIF(a.tot_pax, 0), 2) AS VARCHAR) AS "Avg OD Fare ($)",
+                CAST(ROUND(a.tot_rev / NULLIF(a.tot_pax, 0), 2) AS VARCHAR) AS "Avg Prorated Revenue ($)",
+                a.tot_spill                      AS "Spill"
+            FROM aggregated a
+            ORDER BY a.tot_pax DESC
+            LIMIT {top_n}
+        """).fetchall()
+        cols = [x[0] for x in conn.description]
+        return [dict(zip(cols, r)) for r in rows]
+    except Exception as exc:
+        logger.warning(f"get_route_market_report failed: {exc}")
+        return []
+
+
+def get_route_flow_itins(orig: str, dest: str, top_n: int = 500) -> list:
+    """Flow Itinerary Report for a route — all itineraries whose pax flow through orig→dest.
+
+    Matches the PMCal 'flow_traf-report-itin' CSV columns:
+      Market | Leg1 | Leg2 | Leg3 | Leg4 | Leg5 |
+      Departure Day(s) | Total Demand | Total Traffic |
+      Prorated Revenue (to leg) ($) | Prorated Revenue (beyond) ($) | Spill
+    """
+    conn = get_connection()
+    if not (_table_exists(conn, "workset_spill") and _table_exists(conn, "workset_base")):
+        return []
+    o, d = orig.upper().strip(), dest.upper().strip()
+    try:
+        # Fetch route record_ids as Python list (fast, small)
+        id_rows = conn.execute(
+            "SELECT record_id FROM workset_base WHERE UPPER(TRIM(origin)) = ? AND UPPER(TRIM(dest)) = ?",
+            [o, d]
+        ).fetchall()
+        if not id_rows:
+            return []
+        ids_str = ",".join(str(r[0]) for r in id_rows)
+
+        # Build a temp lookup for workset_base leg descriptions
+        rows = conn.execute(f"""
+            WITH raw AS (
+                SELECT
+                    UPPER(TRIM(s.market_origin)) || UPPER(TRIM(s.market_dest))  AS market,
+                    UPPER(TRIM(wb1.mkt_airline)) || '  ' ||
+                        LPAD(TRIM(wb1.flight_num), 4, ' ') || ' ' ||
+                        UPPER(TRIM(wb1.origin)) || ' ' || UPPER(TRIM(wb1.dest)) AS leg1,
+                    CASE WHEN COALESCE(s.baseIndex_l2, 0) > 0 AND wb2.mkt_airline IS NOT NULL
+                         THEN UPPER(TRIM(wb2.mkt_airline)) || '  ' ||
+                              LPAD(TRIM(wb2.flight_num), 4, ' ') || ' ' ||
+                              UPPER(TRIM(wb2.origin)) || ' ' || UPPER(TRIM(wb2.dest))
+                         ELSE '*' END                                            AS leg2,
+                    CASE WHEN COALESCE(s.baseIndex_l3, 0) > 0 AND wb3.mkt_airline IS NOT NULL
+                         THEN UPPER(TRIM(wb3.mkt_airline)) || '  ' ||
+                              LPAD(TRIM(wb3.flight_num), 4, ' ') || ' ' ||
+                              UPPER(TRIM(wb3.origin)) || ' ' || UPPER(TRIM(wb3.dest))
+                         ELSE '*' END                                            AS leg3,
+                    s.day_of_week,
+                    s.total_demand, s.total_pax, s.total_spill, s.total_revenue
+                FROM workset_spill s
+                JOIN workset_base wb1 ON wb1.record_id = s.baseIndex_l1
+                LEFT JOIN workset_base wb2 ON wb2.record_id = s.baseIndex_l2
+                LEFT JOIN workset_base wb3 ON wb3.record_id = s.baseIndex_l3
+                WHERE s.is_codeshare = 0
+                  AND COALESCE(s.total_pax, 0) > 0
+                  AND (s.baseIndex_l1 IN ({ids_str})
+                    OR s.baseIndex_l2 IN ({ids_str})
+                    OR s.baseIndex_l3 IN ({ids_str}))
+            )
+            SELECT
+                market                                                          AS "Market",
+                leg1                                                            AS "Leg1",
+                leg2                                                            AS "Leg2",
+                leg3                                                            AS "Leg3",
+                '*'                                                             AS "Leg4",
+                '*'                                                             AS "Leg5",
+                CASE WHEN MAX(CASE WHEN day_of_week=1 THEN 1 ELSE 0 END)=1 THEN '1' ELSE '.' END ||
+                CASE WHEN MAX(CASE WHEN day_of_week=2 THEN 1 ELSE 0 END)=1 THEN '2' ELSE '.' END ||
+                CASE WHEN MAX(CASE WHEN day_of_week=3 THEN 1 ELSE 0 END)=1 THEN '3' ELSE '.' END ||
+                CASE WHEN MAX(CASE WHEN day_of_week=4 THEN 1 ELSE 0 END)=1 THEN '4' ELSE '.' END ||
+                CASE WHEN MAX(CASE WHEN day_of_week=5 THEN 1 ELSE 0 END)=1 THEN '5' ELSE '.' END ||
+                CASE WHEN MAX(CASE WHEN day_of_week=6 THEN 1 ELSE 0 END)=1 THEN '6' ELSE '.' END ||
+                CASE WHEN MAX(CASE WHEN day_of_week=0 THEN 1 ELSE 0 END)=1 THEN '7' ELSE '.' END
+                                                                                AS "Departure Day(s)",
+                ROUND(SUM(total_demand), 1)                                     AS "Total Demand",
+                ROUND(SUM(total_pax), 1)                                        AS "Total Traffic",
+                CAST(ROUND(SUM(total_revenue), 0) AS VARCHAR)                   AS "Prorated Revenue (to leg) ($)",
+                ''                                                              AS "Prorated Revenue (beyond) ($)",
+                ROUND(SUM(total_spill), 2)                                      AS "Spill"
+            FROM raw
+            GROUP BY market, leg1, leg2, leg3
+            ORDER BY SUM(total_pax) DESC
+            LIMIT {top_n}
+        """).fetchall()
+        cols = [x[0] for x in conn.description]
+        return [dict(zip(cols, r)) for r in rows]
+    except Exception as exc:
+        logger.warning(f"get_route_flow_itins failed: {exc}")
+        return []
+
+
+
+def get_flight_flow_od(flt: str) -> list:
+    """Return flow OD distribution for a specific flight designator.
+
+    Uses SPILLDATA itinerary records linked via baseIndex_l1/l2/l3 to BASEDATA legs.
+    For each itinerary touching this flight's legs, returns the true market OD
+    (market_origin → market_dest) with predicted pax and itinerary type (local/flow).
+    Falls back to dm_itin_report if workset_spill is unavailable.
+    """
+    conn = get_connection()
+    flt_upper = flt.strip().upper()
+
+    # ── Try SPILLDATA-based reconstruction first (WORKSET204 path) ────────────
+    if _table_exists(conn, "workset_spill") and _table_exists(conn, "workset_base"):
+        try:
+            # Find all baseIndex record_ids for legs belonging to this flight
+            aln = flt_upper[:2].strip()
+            fnum = flt_upper[2:].strip()
+            leg_ids = conn.execute(
+                """
+                SELECT DISTINCT record_id
+                FROM workset_base
+                WHERE UPPER(TRIM(mkt_airline)) = ?
+                  AND TRIM(flight_num) = ?
+                """,
+                [aln, fnum]
+            ).fetchall()
+            if not leg_ids:
+                return []
+            ids = [r[0] for r in leg_ids]
+            placeholders = ",".join("?" * len(ids))
+
+            # Find all SPILLDATA itineraries that use any of these legs
+            rows = conn.execute(
+                f"""
+                SELECT
+                    UPPER(TRIM(s.market_origin))  AS orig,
+                    UPPER(TRIM(s.market_dest))    AS dest,
+                    s.stops,
+                    SUM(s.total_pax)              AS total_traffic,
+                    SUM(s.total_demand)           AS total_demand,
+                    SUM(s.total_spill)            AS total_spill,
+                    COUNT(*)                      AS itin_count
+                FROM workset_spill s
+                WHERE s.baseIndex_l1 IN ({placeholders})
+                   OR s.baseIndex_l2 IN ({placeholders})
+                   OR s.baseIndex_l3 IN ({placeholders})
+                GROUP BY s.market_origin, s.market_dest, s.stops
+                ORDER BY SUM(s.total_pax) DESC NULLS LAST
+                """,
+                ids * 3
+            ).fetchall()
+            cols = [d[0] for d in conn.description]
+            return [dict(zip(cols, r)) for r in rows]
+        except Exception as exc:
+            logger.warning(f"get_flight_flow_od (SPILLDATA path) failed: {exc}")
+
+    # ── Fallback: dm_itin_report (legacy CSV-based worksets) ─────────────────
+    if not _table_exists(conn, "dm_itin_report"):
+        return []
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                "Dept Arp"                           AS orig,
+                "Arvl Arp"                           AS dest,
+                SUM(TRY_CAST("Total Demand"    AS FLOAT)) AS total_demand,
+                SUM(TRY_CAST("Total Traffic"   AS FLOAT)) AS total_traffic,
+                SUM(TRY_CAST("Pax Revenue($)"  AS FLOAT)) AS total_revenue,
+                COUNT(*)                             AS itin_count
+            FROM dm_itin_report
+            WHERE UPPER(TRIM("Flt Desg (Seg1)")) = ?
+               OR UPPER(TRIM("Flt Desg (Seg2)")) = ?
+               OR UPPER(TRIM("Flt Desg (Seg3)")) = ?
+            GROUP BY "Dept Arp", "Arvl Arp"
+            ORDER BY SUM(TRY_CAST("Total Traffic" AS FLOAT)) DESC NULLS LAST
+            """,
+            [flt_upper, flt_upper, flt_upper],
+        ).fetchall()
+        cols = [d[0] for d in conn.description]
+        return [dict(zip(cols, r)) for r in rows]
+    except Exception as exc:
+        logger.warning(f"get_flight_flow_od (itin_report path) failed: {exc}")
+        return []
+
+
+def get_market_carrier_detail(orig: str, dest: str) -> list:
+    """Full Market Summary by Airline for a specific OD (insightsDB OD Detail Panel)."""
+    conn = get_connection()
+    if not _table_exists(conn, "dm_market_carrier"):
+        return []
+    od = f"{orig.upper()}{dest.upper()}"
+    try:
+        rows = conn.execute(
+            'SELECT * FROM dm_market_carrier WHERE "Market" = ? ORDER BY TRY_CAST("Demand Share" AS FLOAT) DESC NULLS LAST',
+            [od]
+        ).fetchall()
+        cols = [d[0] for d in conn.description]
+        return [dict(zip(cols, r)) for r in rows]
+    except Exception as exc:
+        logger.warning(f"get_market_carrier_detail failed: {exc}")
+        return []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -492,23 +1558,23 @@ def load_workset_b(path: str) -> dict:
                     column05                                AS arr_time,
                     TRY_CAST(column06 AS INTEGER)           AS block_time,
                     TRY_CAST(column07 AS INTEGER)           AS distance_mi,
-                    column08                                AS op_airline,
+                    column08                                AS mkt_airline,
                     column09                                AS aircraft_type,
-                    TRY_CAST(column10 AS INTEGER)           AS cap_total,
-                    TRY_CAST(column11 AS FLOAT)             AS booked_pax,
-                    TRY_CAST(column12 AS FLOAT)             AS demand_pax,
-                    TRY_CAST(column14 AS FLOAT)             AS spill_pax,
+                    TRY_CAST(column10 AS INTEGER)           AS apm_cap,
+                    TRY_CAST(column11 AS FLOAT)             AS apm_dmd,
+                    TRY_CAST(column12 AS FLOAT)             AS apm_pax,
+                    TRY_CAST(column13 AS FLOAT)             AS apm_lpax,
+                    TRY_CAST(column14 AS FLOAT)             AS apm_spill,
                     TRY_CAST(column15 AS INTEGER)           AS day_of_week,
-                    TRY_CAST(column16 AS INTEGER)           AS stops,
-                    column18                                AS mkt_airline,
-                    TRY_CAST(column20 AS INTEGER)           AS mct_dep,
-                    TRY_CAST(column21 AS INTEGER)           AS mct_arr
+                    TRY_CAST(column16 AS INTEGER)           AS mkt_ind,
+                    column18                                AS op_airline
                 FROM read_csv('{_csv_path(base_path)}',
                               header=false, delim=',', null_padding=true,
                               all_varchar=true, parallel=true)
                 WHERE column01 IS NOT NULL
                   AND LENGTH(TRIM(column01)) = 3
                   AND LENGTH(TRIM(column02)) = 3
+                  AND TRY_CAST(column16 AS INTEGER) <= 1
             """)
             counts["base"] = conn.execute("SELECT COUNT(*) FROM workset_base_b").fetchone()[0]
         except Exception as e:
@@ -523,15 +1589,21 @@ def load_workset_b(path: str) -> dict:
             conn.execute(f"""
                 CREATE TABLE workset_spill_b AS
                 SELECT
-                    column00 AS origin, column01 AS dest,
+                    column00 AS market_origin, column01 AS market_dest,
                     column02 AS dep_time,
-                    TRY_CAST(column04 AS INTEGER) AS cap_total,
-                    TRY_CAST(column08 AS FLOAT)   AS lf_pax,
-                    TRY_CAST(column12 AS FLOAT)   AS spill_pax,
-                    TRY_CAST(column14 AS FLOAT)   AS recap_pax,
-                    TRY_CAST(column16 AS FLOAT)   AS total_lf_pax,
+                    TRY_CAST(column03 AS INTEGER) AS day_of_week,
+                    COALESCE(TRY_CAST(column08 AS FLOAT),0) + COALESCE(TRY_CAST(column09 AS FLOAT),0) +
+                    COALESCE(TRY_CAST(column10 AS FLOAT),0) + COALESCE(TRY_CAST(column11 AS FLOAT),0)
+                                                  AS total_demand,
+                    COALESCE(TRY_CAST(column16 AS FLOAT),0) + COALESCE(TRY_CAST(column17 AS FLOAT),0) +
+                    COALESCE(TRY_CAST(column18 AS FLOAT),0) + COALESCE(TRY_CAST(column19 AS FLOAT),0)
+                                                  AS total_pax,
+                    COALESCE(TRY_CAST(column12 AS FLOAT),0) + COALESCE(TRY_CAST(column13 AS FLOAT),0) +
+                    COALESCE(TRY_CAST(column14 AS FLOAT),0) + COALESCE(TRY_CAST(column15 AS FLOAT),0)
+                                                  AS total_spill,
                     TRY_CAST(column23 AS FLOAT)   AS mkt_share,
-                    column24                      AS airline
+                    column24                      AS airline,
+                    TRY_CAST(column22 AS INTEGER) AS stops
                 FROM read_csv('{_csv_path(spill_path)}',
                               header=false, delim=',', null_padding=true,
                               all_varchar=true, parallel=true)
@@ -563,7 +1635,7 @@ def compare_worksets(origin: str = "", dest: str = "", airline: str = "", top_n:
     if dest:
         filters.append(f"dest = '{dest.upper()}'")
     if airline:
-        filters.append(f"op_airline = '{airline.upper()}'")
+        filters.append(f"mkt_airline = '{airline.upper()}'")
     if filters:
         clause = " AND ".join(filters)
         where_a = where_b = clause
@@ -572,10 +1644,10 @@ def compare_worksets(origin: str = "", dest: str = "", airline: str = "", top_n:
     WITH a AS (
         SELECT origin, dest,
                COUNT(*)                  AS flights_a,
-               SUM(cap_total)            AS seats_a,
-               SUM(demand_pax)           AS demand_a,
-               SUM(spill_pax)            AS spill_a,
-               AVG(CASE WHEN cap_total > 0 THEN booked_pax / cap_total END) AS lf_a
+               SUM(apm_cap)              AS seats_a,
+               SUM(apm_dmd)              AS demand_a,
+               SUM(apm_spill)            AS spill_a,
+               SUM(apm_pax) / NULLIF(SUM(CAST(apm_cap AS FLOAT)), 0) AS lf_a
         FROM workset_base
         WHERE {where_a}
         GROUP BY origin, dest
@@ -583,10 +1655,10 @@ def compare_worksets(origin: str = "", dest: str = "", airline: str = "", top_n:
     b AS (
         SELECT origin, dest,
                COUNT(*)                  AS flights_b,
-               SUM(cap_total)            AS seats_b,
-               SUM(demand_pax)           AS demand_b,
-               SUM(spill_pax)            AS spill_b,
-               AVG(CASE WHEN cap_total > 0 THEN booked_pax / cap_total END) AS lf_b
+               SUM(apm_cap)              AS seats_b,
+               SUM(apm_dmd)              AS demand_b,
+               SUM(apm_spill)            AS spill_b,
+               SUM(apm_pax) / NULLIF(SUM(CAST(apm_cap AS FLOAT)), 0) AS lf_b
         FROM workset_base_b
         WHERE {where_b}
         GROUP BY origin, dest
@@ -755,19 +1827,15 @@ def get_route_intelligence(origin: str, dest: str) -> Dict[str, Any]:
     # ── 4. Per-airline performance from SPILLDATA ────────────────────────────
     aln_rows = conn.execute("""
         SELECT
-            airline,
-            COUNT(*) AS flight_days,
-            CAST(AVG(cap_total) AS INTEGER) AS avg_cap,
-            SUM(cap_total)                  AS total_weekly_seats,
-            ROUND(SUM(mkt_share) * 100, 2)  AS mkt_share_pct,
-            ROUND(SUM(spill_pax), 2)        AS total_spill,
-            ROUND(SUM(recap_pax), 2)        AS total_recap,
-            ROUND(AVG(lf_pax), 3)           AS avg_lf_pax,
-            ROUND(AVG(total_lf_pax), 3)     AS avg_total_lf,
-            COUNT(DISTINCT dep_time)        AS unique_dep_times,
+            UPPER(TRIM(airline))                              AS airline,
+            COUNT(*)                                          AS itin_count,
+            ROUND(SUM(mkt_share) * 100, 2)                   AS mkt_share_pct,
+            ROUND(SUM(total_spill), 2)                        AS total_spill,
+            ROUND(SUM(total_pax), 2)                          AS total_pax_all,
+            COUNT(DISTINCT dep_time)                          AS unique_dep_times,
             STRING_AGG(DISTINCT dep_time, '|' ORDER BY dep_time) AS dep_times_raw
         FROM workset_spill
-        WHERE origin=? AND dest=? AND (is_codeshare IS NULL OR is_codeshare=0)
+        WHERE market_origin=? AND market_dest=? AND (is_codeshare IS NULL OR is_codeshare=0)
         GROUP BY airline
         ORDER BY mkt_share_pct DESC
     """, [origin, dest]).fetchall()
@@ -845,12 +1913,12 @@ def get_route_intelligence(origin: str, dest: str) -> Dict[str, Any]:
     # ── 9. Spill summary ─────────────────────────────────────────────────────
     spill_row = conn.execute("""
         SELECT
-            ROUND(SUM(spill_pax), 2) AS total_spill,
-            COUNT(CASE WHEN spill_pax > 0.05 THEN 1 END) AS flights_with_spill,
-            ROUND(MAX(spill_pax), 2) AS max_spill,
-            ROUND(SUM(recap_pax), 2) AS total_recap
+            ROUND(SUM(total_spill), 2) AS total_spill,
+            COUNT(CASE WHEN total_spill > 0.05 THEN 1 END) AS flights_with_spill,
+            ROUND(MAX(total_spill), 2) AS max_spill,
+            0.0 AS total_recap
         FROM workset_spill
-        WHERE origin=? AND dest=? AND (is_codeshare IS NULL OR is_codeshare=0)
+        WHERE market_origin=? AND market_dest=? AND (is_codeshare IS NULL OR is_codeshare=0)
     """, [origin, dest]).fetchone()
 
     total_spill  = _safe_float(spill_row[0]) if spill_row else 0.0
@@ -928,37 +1996,26 @@ def get_route_intelligence(origin: str, dest: str) -> Dict[str, Any]:
         "Charter":      0.05,
         "Ultra low-cost": 0.08,
     }
-    total_wk_seats_for_est = sum(_safe_int(r[3]) for r in aln_rows) or 1
-    est_local_pax = 0.0
-    est_flow_pax  = 0.0
-    for row_a in aln_rows:
-        aln_code_a = row_a[0]
-        wk_seats_a = _safe_int(row_a[3])
-        avg_lf_a   = _safe_float(row_a[7]) or 0.75  # default 75% LF if missing
-        pax_a = wk_seats_a * avg_lf_a
-        flow_ratio = FLOW_RATIOS.get(CARRIER_TYPE.get(aln_code_a, "Full-service"), 0.4)
-        est_flow_pax  += pax_a * flow_ratio
-        est_local_pax += pax_a * (1 - flow_ratio)
-    est_total_pax = est_local_pax + est_flow_pax or 1
+    total_wk_seats_for_est = 1  # capacity not available from SPILLDATA directly
 
     # ── 11. Assemble airline list ─────────────────────────────────────────────
-    total_weekly_seats = sum(_safe_int(r[3]) for r in aln_rows)
+    total_weekly_seats = 0
     airlines_out = []
     for row in aln_rows:
-        aln_code, flight_days, avg_cap, wk_seats, mkt_pct, spill, recap, avg_lfp, avg_tfl, n_deps, _ = row
+        aln_code, itin_count, mkt_pct, spill, total_pax, n_deps, _ = row
         deps = dep_by_airline.get(aln_code, [])
         airlines_out.append({
             "code":               aln_code,
             "name":               AIRLINE_NAMES.get(aln_code, aln_code),
             "carrier_type":       CARRIER_TYPE.get(aln_code, "Full-service"),
             "alliance":           alliances.get(aln_code, "None / Independent"),
-            "weekly_flight_days": _safe_int(flight_days),
+            "weekly_flight_days": _safe_int(itin_count),
             "unique_dep_times":   _safe_int(n_deps),
-            "avg_seats_per_flight": _safe_int(avg_cap),
-            "weekly_seat_capacity": _safe_int(wk_seats),
+            "avg_seats_per_flight": 0,
+            "weekly_seat_capacity": 0,
             "market_share_pct":   _safe_float(mkt_pct),
             "weekly_spill":       _safe_float(spill),
-            "weekly_recap":       _safe_float(recap),
+            "weekly_recap":       0.0,
             "demand_pressure":    "High" if _safe_float(spill) > 2 else "Low",
             "aircraft_types":     ac_by_airline.get(aln_code, []),
             "departure_times":    deps[:12],  # cap for readability

@@ -332,6 +332,50 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "get_itin_report",
+        "description": (
+            "Return the itinerary view for a specific O&D market: all itineraries (nonstop + connecting) "
+            "operated by all carriers between an origin and destination, with pax/demand per itinerary. "
+            "Use this for ANY question about itineraries, routing options, connecting flights, or "
+            "'itin view' requests. Returns columns: Dept Arp, Arvl Arp, Seg1 flight, Connect Point(s), "
+            "Seg2/Seg3 flights, Stops, Freq, Dep/Arr times, Total Demand, Total Traffic. "
+            "Optionally filter by carrier (2-letter IATA code)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "origin":      {"type": "string", "description": "IATA origin airport, e.g. DEN"},
+                "destination": {"type": "string", "description": "IATA destination airport, e.g. MCO"},
+                "carrier":     {"type": "string", "description": "Optional 2-letter IATA carrier code to filter, e.g. F9"},
+                "top_n":       {"type": "integer", "description": "Max rows to return, default 100"},
+            },
+            "required": ["origin", "destination"],
+        },
+    },
+    {
+        "name": "get_od_flow_summary",
+        "description": (
+            "Return a COMPLETE passenger flow summary for an O&D pair, combining ALL workset data tabs:\n"
+            "  • segment_flights: direct/connecting flights on the route (segment view)\n"
+            "  • itineraries: every routing option (nonstop + 1/2-stop) with demand, traffic, connect points\n"
+            "  • market_shares: airline-by-airline demand/traffic/revenue breakdown\n"
+            "  • flow_routing: aggregated node-level flow — which airports serve as connection hubs "
+            "    and how much traffic flows through them (e.g. AAA→CCC→BBB)\n"
+            "  • routing_sankey: pre-built Sankey-ready link data [{source, target, demand, traffic}]\n"
+            "ALWAYS call this tool when the user asks about flights between two airports, "
+            "itineraries, connecting options, or 'how do I get from X to Y'. "
+            "It gives richer context than get_itin_report alone by including market share and flow data."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "origin":      {"type": "string", "description": "IATA origin airport, e.g. DXB"},
+                "destination": {"type": "string", "description": "IATA destination airport, e.g. LHR"},
+            },
+            "required": ["origin", "destination"],
+        },
+    },
+    {
         "name": "get_route_intelligence",
         "description": (
             "Return a COMPREHENSIVE intelligence dossier for any O&D route combining ALL data sources: "
@@ -421,6 +465,22 @@ TOOL_DEFINITIONS = [
                 "description": {
                     "type": "string",
                     "description": "One-line plain-English description of what this query computes (for logging).",
+                },
+                "chart_type": {
+                    "type": "string",
+                    "description": (
+                        "Optional visualization hint. Choose the chart type that best communicates the result:\n"
+                        "- 'bar': categorical comparison with few categories (≤10)\n"
+                        "- 'horizontal_bar': many categories or long labels\n"
+                        "- 'pie': true proportions summing to 100% (e.g. market share split)\n"
+                        "- 'radar': multi-metric comparison of same entities (e.g. 3 airlines × 5 KPIs)\n"
+                        "- 'heatmap': two-axis grid values (e.g. departures by hour×day-of-week)\n"
+                        "- 'table': data is too complex or has too many columns for a chart\n"
+                        "If omitted, chart type is auto-detected. USE RADAR for competitive "
+                        "multi-metric airline comparisons — it shows strengths/weaknesses "
+                        "instantly. USE HEATMAP for time/day pattern analysis."
+                    ),
+                    "enum": ["bar", "horizontal_bar", "pie", "radar", "heatmap", "table"],
                 },
             },
             "required": ["query"],
@@ -740,6 +800,122 @@ def execute_tool(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
                 airline=args.get("airline"),
             )}
 
+        elif tool_name == "get_itin_report":
+            from app.services.workset_service import get_itin_report
+            origin      = (args.get("origin") or "").upper()
+            destination = (args.get("destination") or "").upper()
+            carrier     = (args.get("carrier") or "").upper()
+            top_n       = int(args.get("top_n") or 100)
+            if not origin or not destination:
+                return {"tool": tool_name, "error": "origin and destination are required."}
+            rows = get_itin_report(orig=origin, dest=destination, carrier=carrier, top_n=top_n)
+            return {
+                "tool": tool_name,
+                "origin": origin,
+                "destination": destination,
+                "carrier_filter": carrier or "all",
+                "row_count": len(rows),
+                "columns": list(rows[0].keys()) if rows else [],
+                "rows": rows,
+                "chart_type": "table",
+            }
+
+        elif tool_name == "get_od_flow_summary":
+            from app.services.workset_service import (
+                get_itin_report, get_route_market_report,
+                get_route_flow_itins, get_flight_report,
+            )
+            origin      = (args.get("origin") or "").upper()
+            destination = (args.get("destination") or "").upper()
+            if not origin or not destination:
+                return {"tool": tool_name, "error": "origin and destination are required."}
+
+            # Fetch all tab data in parallel-ish (sequential but fast — all pre-built tables)
+            itin_rows   = get_itin_report(orig=origin, dest=destination, top_n=200)
+            market_rows = get_route_market_report(origin, destination, top_n=50)
+            flow_rows   = get_route_flow_itins(origin, destination, top_n=100)
+            seg_rows    = get_flight_report(orig=origin, dest=destination, top_n=50)
+
+            # Build routing flow: aggregate demand/traffic through each node pair
+            flow_links: dict = {}  # (source, target) -> {demand, traffic}
+            for r in itin_rows:
+                try:
+                    orig_ap = str(r.get("Dept Arp") or "").strip()
+                    dest_ap = str(r.get("Arvl Arp") or "").strip()
+                    cp1     = str(r.get("Connect Point 1") or "").strip()
+                    cp2     = str(r.get("Connect Point 2") or "").strip()
+                    demand  = float(r.get("Total Demand") or 0)
+                    traffic = float(r.get("Total Traffic") or 0)
+                    stops   = int(r.get("Stops") or 0)
+                    if not orig_ap or not dest_ap:
+                        continue
+                    if stops == 0 or cp1 in ("*", "", None):
+                        # Nonstop
+                        k = (orig_ap, dest_ap)
+                        if k not in flow_links:
+                            flow_links[k] = {"demand": 0.0, "traffic": 0.0}
+                        flow_links[k]["demand"]  += demand
+                        flow_links[k]["traffic"] += traffic
+                    elif stops >= 1 and cp1 not in ("*", ""):
+                        # Leg 1: orig → cp1
+                        k1 = (orig_ap, cp1)
+                        if k1 not in flow_links:
+                            flow_links[k1] = {"demand": 0.0, "traffic": 0.0}
+                        flow_links[k1]["demand"]  += demand
+                        flow_links[k1]["traffic"] += traffic
+                        if stops >= 2 and cp2 not in ("*", ""):
+                            # Leg 2: cp1 → cp2, Leg 3: cp2 → dest
+                            k2 = (cp1, cp2)
+                            k3 = (cp2, dest_ap)
+                            for k in (k2, k3):
+                                if k not in flow_links:
+                                    flow_links[k] = {"demand": 0.0, "traffic": 0.0}
+                                flow_links[k]["demand"]  += demand
+                                flow_links[k]["traffic"] += traffic
+                        else:
+                            # Leg 2: cp1 → dest
+                            k2 = (cp1, dest_ap)
+                            if k2 not in flow_links:
+                                flow_links[k2] = {"demand": 0.0, "traffic": 0.0}
+                            flow_links[k2]["demand"]  += demand
+                            flow_links[k2]["traffic"] += traffic
+                except Exception:
+                    continue
+
+            sankey_links = [
+                {"source": s, "target": t, "demand": round(v["demand"], 1), "traffic": round(v["traffic"], 1)}
+                for (s, t), v in sorted(flow_links.items(), key=lambda x: -x[1]["traffic"])
+            ]
+
+            # Routing summary for LM text
+            nonstop_count  = sum(1 for r in itin_rows if int(r.get("Stops") or 0) == 0)
+            connect_count  = sum(1 for r in itin_rows if int(r.get("Stops") or 0) > 0)
+            connect_hubs   = sorted(
+                {str(r.get("Connect Point 1") or "").strip()
+                 for r in itin_rows
+                 if str(r.get("Connect Point 1") or "").strip() not in ("*", "", "None")},
+            )
+            total_demand   = sum(float(r.get("Total Demand") or 0) for r in itin_rows)
+            total_traffic  = sum(float(r.get("Total Traffic") or 0) for r in itin_rows)
+
+            return {
+                "tool": tool_name,
+                "origin": origin,
+                "destination": destination,
+                "summary": {
+                    "nonstop_itineraries":   nonstop_count,
+                    "connecting_itineraries": connect_count,
+                    "connection_hubs":       connect_hubs,
+                    "total_weekly_demand":   round(total_demand, 1),
+                    "total_weekly_traffic":  round(total_traffic, 1),
+                },
+                "routing_sankey": sankey_links,
+                "segment_flights": seg_rows[:30],
+                "itineraries":    itin_rows[:60],
+                "market_shares":  market_rows[:20],
+                "flow_itins":     flow_rows[:30],
+            }
+
         elif tool_name == "get_route_intelligence":
             from app.services.workset_service import get_route_intelligence
             origin      = (args.get("origin") or "").upper()
@@ -782,12 +958,16 @@ def execute_tool(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
 
         elif tool_name == "execute_sql":
             from app.services.dynamic_query_service import execute_sql
-            query = (args.get("query") or "").strip()
-            desc  = args.get("description", "")
+            query      = (args.get("query") or "").strip()
+            desc       = args.get("description", "")
+            chart_type = (args.get("chart_type") or "").strip().lower()
             if not query:
                 return {"tool": tool_name, "error": "query is required."}
-            logger.info(f"execute_sql called — {desc or 'no description'} | {query[:120]}")
-            return {"tool": tool_name, "description": desc, **execute_sql(query)}
+            logger.info(f"execute_sql called — {desc or 'no description'} | chart_type={chart_type or 'auto'} | {query[:120]}")
+            result = execute_sql(query)
+            if chart_type:
+                result["chart_type"] = chart_type
+            return {"tool": tool_name, "description": desc, **result}
 
         else:
             return {"tool": tool_name, "error": f"Unknown tool: {tool_name}"}

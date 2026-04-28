@@ -61,7 +61,10 @@ def _find_label_value_cols(columns: List[str], rows: List[Dict]):
 
 def _detect_chart_type(columns: List[str], rows: List[Dict]) -> str:
     cl = [c.lower() for c in columns]
-    has_pct = any(h in c for c in cl for h in ("pct","share","percent"))
+    # "share" columns sum to ~100% across labels → pie makes sense
+    # "pct/percent/avg" columns are per-entity comparisons → bar is better
+    has_share = any("share" in c and "pct" not in c for c in cl) or any("share_pct" == c or c.endswith("_share") for c in cl)
+    has_pct   = any(h in c for c in cl for h in ("pct","percent"))
     time_cols = {"hour","dep_hour","arr_hour","time_bucket","day_of_week","dow","day","dep_hour"}
     has_time = any(c in cl for c in time_cols)
 
@@ -71,7 +74,9 @@ def _detect_chart_type(columns: List[str], rows: List[Dict]) -> str:
     if has_time and len(columns) >= 2:
         return "bar"
     if len(non_num) >= 1 and len(num_cols) >= 1:
-        if has_pct and len(rows) <= 14:
+        # Only use pie when values genuinely represent parts of a whole (share/proportion)
+        # Avg/LF/rate columns are comparisons — use horizontal bar instead
+        if has_share and not has_pct and len(rows) <= 14:
             return "pie"
         if len(rows) <= 20:
             return "bar" if len(rows) <= 10 else "horizontal_bar"
@@ -118,36 +123,157 @@ def _fmt(v, digits=1):
 # Per-tool converters
 # ─────────────────────────────────────────────────────────────────────────────
 
+_ITIN_COL_HINTS = {
+    "stops", "stop_count", "num_stops", "via", "hub", "connect_point",
+    "layover", "layover_min", "connection_minutes", "conn_min",
+    "leg1", "leg2", "leg_1", "leg_2", "flt_desg", "seg1", "seg2",
+    "itin", "itinerary", "connect_time", "mct", "minimum_connect",
+    # insightsDB workset column names
+    "flt desg (seg1)", "flt desg (seg2)", "flt desg (seg3)",
+    "connect point 1", "connect point 2",
+}
+
+
+def _is_itin_columns(columns: List[str]) -> bool:
+    """Heuristic: true when the column set looks like an itinerary result."""
+    cl = {c.lower().strip() for c in columns}
+    return bool(cl & _ITIN_COL_HINTS)
+
+
 def _sql_vizs(result: Dict) -> List[Dict]:
     columns = result.get("columns") or []
     rows    = result.get("rows") or []
     row_count = result.get("row_count", len(rows))
+    chart_hint = (result.get("chart_type") or "").strip().lower()
     if not columns or not rows:
         return []
 
+    # Auto-detect itinerary tables and apply insightsDB table_style
+    table_style = "itinerary_report" if _is_itin_columns(columns) else ""
+
     vizs: List[Dict] = []
-    vizs.append({
+    tbl: Dict = {
         "type": "table",
         "title": f"Query Results ({row_count} rows)",
         "columns": columns,
         "rows": rows[:200],
         "row_count": row_count,
-    })
+    }
+    if table_style:
+        tbl["table_style"] = table_style
+    vizs.append(tbl)
 
-    ct = _detect_chart_type(columns, rows)
+    # ── Radar: multi-metric comparison across entities ─────────────────────
+    if chart_hint == "radar" or (chart_hint == "" and _should_radar(columns, rows)):
+        radar = _radar_data(columns, rows)
+        if radar:
+            vizs.append(radar)
+            return vizs
+
+    # ── Heatmap: two-axis grid (e.g. hour × day) ──────────────────────────
+    if chart_hint == "heatmap" or (chart_hint == "" and _should_heatmap(columns, rows)):
+        hm = _heatmap_data(columns, rows)
+        if hm:
+            vizs.append(hm)
+            return vizs
+
+    # ── Table-only if explicitly requested ────────────────────────────────
+    if chart_hint == "table":
+        return vizs
+
+    # ── Bar / Pie auto-detection (or honoured hint) ───────────────────────
+    ct = chart_hint if chart_hint in ("bar", "horizontal_bar", "pie") else _detect_chart_type(columns, rows)
     label_col, value_col = _find_label_value_cols(columns, rows)
 
-    if ct in ("bar","horizontal_bar") and label_col and value_col:
+    if ct in ("bar", "horizontal_bar") and label_col and value_col:
         data = _bar_data(rows, label_col, value_col)
         if data["labels"]:
-            title = f"{value_col.replace('_',' ').title()} by {label_col.replace('_',' ').title()}"
-            vizs.append({"type": ct, "title": title, "label_col": label_col, "value_col": value_col, "data": data})
+            vc = value_col.replace('_',' ').replace(' pct',' %').title()
+            lc = label_col.replace('_',' ').title()
+            vizs.append({"type": ct, "title": f"{vc} by {lc}",
+                         "label_col": label_col, "value_col": value_col, "data": data})
     elif ct == "pie" and label_col and value_col:
         slices = _pie_slices(rows, label_col, value_col)
         if slices:
-            vizs.append({"type": "pie", "title": f"{value_col.replace('_',' ').title()} Distribution", "slices": slices})
+            vc = value_col.replace('_',' ').replace(' pct',' %').title()
+            vizs.append({"type": "pie", "title": f"{vc} Share", "slices": slices})
 
     return vizs
+
+
+# ── Radar helpers ──────────────────────────────────────────────────────────────
+
+def _should_radar(columns: List[str], rows: List[Dict]) -> bool:
+    """True when result looks like a multi-airline × multi-metric comparison."""
+    if len(rows) < 2 or len(rows) > 12:
+        return False
+    num_cols = [c for c in columns if _col_is_numeric(rows, c)]
+    non_num  = [c for c in columns if not _col_is_numeric(rows, c)]
+    # Radar: 1 label col + 4+ numeric metric cols (airline comparison pattern)
+    return len(non_num) == 1 and len(num_cols) >= 4
+
+
+def _radar_data(columns: List[str], rows: List[Dict]) -> Optional[Dict]:
+    num_cols = [c for c in columns if _col_is_numeric(rows, c)]
+    non_num  = [c for c in columns if not _col_is_numeric(rows, c)]
+    if not non_num or len(num_cols) < 3:
+        return None
+    label_col = non_num[0]
+    # Normalize each metric 0-100 for radar readability
+    col_maxes = {}
+    for col in num_cols:
+        vals = [float(r.get(col) or 0) for r in rows]
+        col_maxes[col] = max(vals) if vals else 1
+    datasets = []
+    for row in rows[:10]:
+        label = str(row.get(label_col, ""))
+        data  = [
+            round(float(row.get(col) or 0) / max(col_maxes[col], 0.001) * 100, 1)
+            for col in num_cols
+        ]
+        datasets.append({"label": label, "data": data})
+    axes = [c.replace('_',' ').replace(' pct',' %').title() for c in num_cols]
+    return {
+        "type": "radar",
+        "title": f"Multi-Metric Comparison · {label_col.replace('_',' ').title()}",
+        "labels": axes,
+        "datasets": datasets,
+        "note": "Values normalized 0–100 per metric (100 = max observed)",
+    }
+
+
+# ── Heatmap helpers ────────────────────────────────────────────────────────────
+
+def _should_heatmap(columns: List[str], rows: List[Dict]) -> bool:
+    """True when the query looks like a time × day departure-count heatmap."""
+    cl = [c.lower() for c in columns]
+    has_time = any(h in c for c in cl for h in ("hour","time_bucket","dep_hour"))
+    has_day  = any(h in c for c in cl for h in ("day","dow","day_of_week"))
+    num_cols = [c for c in columns if _col_is_numeric(rows, c)]
+    return has_time and has_day and len(num_cols) >= 1 and len(rows) >= 4
+
+
+def _heatmap_data(columns: List[str], rows: List[Dict]) -> Optional[Dict]:
+    cl = [c.lower() for c in columns]
+    # Find row-axis col (day), col-axis col (hour/time), value col
+    day_col  = next((columns[i] for i, c in enumerate(cl) if any(h in c for h in ("day","dow","day_of_week"))), None)
+    time_col = next((columns[i] for i, c in enumerate(cl) if any(h in c for h in ("hour","time_bucket","dep_hour"))), None)
+    num_cols = [c for c in columns if _col_is_numeric(rows, c)]
+    if not (day_col and time_col and num_cols):
+        return None
+    val_col = num_cols[0]
+    # Build pivot: rows=days, cols=time buckets
+    days  = sorted(set(str(r.get(day_col, "")) for r in rows))
+    times = sorted(set(str(r.get(time_col, "")) for r in rows))
+    lookup = {(str(r.get(day_col,"")), str(r.get(time_col,""))): float(r.get(val_col) or 0) for r in rows}
+    matrix = [[lookup.get((d, t), 0) for t in times] for d in days]
+    return {
+        "type": "heatmap",
+        "title": f"{val_col.replace('_',' ').title()} · {day_col.replace('_',' ').title()} × {time_col.replace('_',' ').title()}",
+        "row_labels": days,
+        "col_labels": times,
+        "matrix": matrix,
+    }
 
 
 def _route_analysis_vizs(result: Dict) -> List[Dict]:
@@ -493,6 +619,50 @@ def _generic_table_viz(result: Dict, title_prefix: str) -> List[Dict]:
     return []
 
 
+def _find_path_vizs(result: Dict) -> List[Dict]:
+    """Flatten find_path path options into an insightsDB-style itinerary table."""
+    paths = result.get("paths") or []
+    if not paths:
+        return []
+    origin = result.get("origin", "")
+    dest   = result.get("destination", "")
+    rows: List[Dict] = []
+    for p in paths:
+        stops = int(p.get("stops", 0))
+        legs  = p.get("legs") or []
+        row: Dict = {
+            "stops":      stops,
+            "total_time": f"{int(p.get('total_block_min', 0) or 0) // 60}h {int(p.get('total_block_min', 0) or 0) % 60}m",
+            "path":       " → ".join(p.get("path") or [origin, dest]),
+        }
+        if legs:
+            row["airline"]   = legs[0].get("airline", "")
+            row["leg1"]      = f"{legs[0]['from']}→{legs[0]['to']}"
+            row["blk1_min"]  = legs[0].get("block_min", "")
+        if len(legs) >= 2:
+            row["via"]       = legs[0].get("to", "")
+            row["leg2"]      = f"{legs[1]['from']}→{legs[1]['to']}"
+            row["blk2_min"]  = legs[1].get("block_min", "")
+        if len(legs) >= 3:
+            row["leg3"]      = f"{legs[2]['from']}→{legs[2]['to']}"
+            row["blk3_min"]  = legs[2].get("block_min", "")
+        rows.append(row)
+
+    # Build columns in a logical order
+    base_cols = ["stops", "total_time", "airline", "path"]
+    extra = ["leg1", "blk1_min", "via", "leg2", "blk2_min", "leg3", "blk3_min"]
+    cols = base_cols + [c for c in extra if any(c in r for r in rows)]
+
+    return [{
+        "type": "table",
+        "title": f"Routing Options · {origin}–{dest}",
+        "columns": cols,
+        "rows": rows,
+        "row_count": len(rows),
+        "table_style": "itinerary_report",
+    }]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
@@ -510,7 +680,6 @@ def extract_visualizations(tool_results: List[Dict]) -> List[Dict]:
 
         if tool == "execute_sql":
             all_vizs.extend(_sql_vizs(result))
-
         elif tool in ("get_route_intelligence",):
             all_vizs.extend(_route_intel_vizs(result))
 
@@ -526,6 +695,28 @@ def extract_visualizations(tool_results: List[Dict]) -> List[Dict]:
         elif tool == "get_airport_overview":
             all_vizs.extend(_generic_table_viz(result, "Airport Overview"))
 
+        elif tool == "get_itin_report":
+            orig = result.get("origin", "")
+            dest = result.get("destination", "")
+            carrier = result.get("carrier_filter", "all")
+            title = f"Itinerary View: {orig}→{dest}" + (f" ({carrier})" if carrier != "all" else "")
+            rows = result.get("rows", [])
+            if rows:
+                # Show key columns only to keep table readable
+                display_cols = [
+                    "Dept Arp", "Arvl Arp", "Flt Desg (Seg1)", "Connect Point 1",
+                    "Flt Desg (Seg2)", "Stops", "Freq", "Dept Time", "Arvl Time",
+                    "Elap Time", "Total Demand", "Total Traffic",
+                ]
+                trimmed = [{c: r.get(c, "") for c in display_cols} for r in rows[:200]]
+                all_vizs.append({
+                    "type": "table",
+                    "title": f"{title} ({len(rows)} itins)",
+                    "columns": display_cols,
+                    "rows": trimmed,
+                    "row_count": len(rows),
+                })
+
     # De-duplicate by title
     seen: set = set()
     out: List[Dict] = []
@@ -536,6 +727,304 @@ def extract_visualizations(tool_results: List[Dict]) -> List[Dict]:
             out.append(v)
 
     # Sort: kpi_row → local_flow_split → table → charts
-    order = {"kpi_row": 0, "local_flow_split": 1, "table": 2, "bar": 3, "horizontal_bar": 4, "pie": 5}
+    order = {"kpi_row": 0, "local_flow_split": 1, "table": 2, "bar": 3, "horizontal_bar": 4, "pie": 5, "radar": 3, "heatmap": 3}
     out.sort(key=lambda v: order.get(v.get("type",""), 6))
     return out
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AI Chart Suggestion  — asks Gemini to pick the best chart for any data set
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Columns that are never meaningful to visualise
+_JUNK_COL_PATTERNS = {
+    "id", "uuid", "key", "hash", "index", "idx", "row_num", "rownum",
+    "record_id", "flight_id", "created_at", "updated_at", "timestamp",
+    "effective_from", "effective_to", "utc_offset_dep", "utc_offset_arr",
+    "terminal_dep", "terminal_arr", "day_of_operation",
+    "baseindex_l1", "baseindex_l2", "baseindex", "spill_index",
+}
+
+# Column name fragments → semantic type  (checked in order)
+_COL_SEMANTIC_RULES: List[tuple] = [
+    # airport/hub nodes — most important for network charts
+    (("origin", "dest", "airport", "dep_arp", "arr_arp", "connect_point",
+      "connection_point", "via_point", "hub", "gateway", "from_airport", "to_airport"), "airport_code"),
+    # airline / carrier
+    (("mkt_airline", "op_airline", "carrier", "airline", "aln"), "airline_code"),
+    # flight identifiers — informational only, not a metric
+    (("flight_number", "flt_num", "flt_no", "flt"), "flight_number"),
+    # explicit percentage / share columns
+    (("pct", "percent", "share", "rate", "ratio", "lf", "load_factor"), "percentage"),
+    # volume / count metrics — good for chart values
+    (("pax", "seats", "freq", "flights", "count", "total", "sum",
+      "revenue", "yield", "capacity", "demand", "spill"), "numeric_metric"),
+]
+
+def _is_junk_col(col: str) -> bool:
+    cl = col.lower().strip()
+    return (
+        cl in _JUNK_COL_PATTERNS
+        or cl.endswith("_id")
+        or cl.endswith("_key")
+        or cl.endswith("_hash")
+        or cl.startswith("__")
+        or cl in ("id", "pk", "fk")
+    )
+
+def _col_profile(col: str, rows: List[Dict]) -> dict:
+    """
+    Return a rich profile dict for a column:
+      type: semantic type string
+      cardinality: number of unique non-null values
+      constant: True if all values are identical (useless for charts)
+      flag_numeric: True if it looks like stops/boolean (≤4 unique tiny ints)
+      sample: short list of example values
+    """
+    sample_all = [r.get(col) for r in rows if r.get(col) is not None]
+    sample = sample_all[:30]
+    unique_vals = list(dict.fromkeys(str(v) for v in sample_all))  # ordered unique
+
+    cardinality = len(unique_vals)
+    constant = (cardinality <= 1)
+
+    cl = col.lower().strip()
+
+    # Semantic type via rules
+    sem_type = "categorical"
+    for keywords, stype in _COL_SEMANTIC_RULES:
+        if any(kw in cl for kw in keywords):
+            sem_type = stype
+            break
+    else:
+        # fallback: numeric detection
+        num_count = sum(1 for v in sample if _is_numeric(v))
+        if num_count > len(sample) * 0.7:
+            sem_type = "numeric"
+
+    # Detect "flag" numerics: numeric column with ≤4 unique tiny integer values
+    # (e.g. stops=0/1/2, codeshare=0/1) — these are dimensions, NOT metrics
+    flag_numeric = False
+    if sem_type in ("numeric", "numeric_metric"):
+        try:
+            int_vals = {int(float(v)) for v in unique_vals if _is_numeric(v)}
+            if len(int_vals) <= 4 and all(0 <= x <= 10 for x in int_vals):
+                flag_numeric = True
+                sem_type = "flag_or_category"
+        except Exception:
+            pass
+
+    return {
+        "type": sem_type,
+        "cardinality": cardinality,
+        "constant": constant,
+        "flag_numeric": flag_numeric,
+        "sample": unique_vals[:5],
+    }
+
+def _select_chart_columns(col_profiles: dict) -> dict:
+    """
+    Pre-select the best columns for common chart mappings so Gemini has strong hints.
+    Returns a hints dict the prompt can include.
+    """
+    airport_cols = [c for c, p in col_profiles.items()
+                    if p["type"] == "airport_code" and not p["constant"]]
+    airline_cols = [c for c, p in col_profiles.items()
+                    if p["type"] == "airline_code" and not p["constant"]]
+    metric_cols  = [c for c, p in col_profiles.items()
+                    if p["type"] in ("numeric_metric", "numeric", "percentage")
+                    and not p["constant"] and not p["flag_numeric"]]
+
+    hints = {}
+    # Network: need 2 airport cols (or airport+airline)
+    if len(airport_cols) >= 2:
+        hints["suggested_chart"] = "network"
+        hints["source_hint"] = airport_cols[0]
+        hints["target_hint"] = airport_cols[1]
+        hints["weight_hint"] = metric_cols[0] if metric_cols else None
+    elif len(airport_cols) == 1 and airline_cols:
+        hints["suggested_chart"] = "network"
+        hints["source_hint"] = airline_cols[0]
+        hints["target_hint"] = airport_cols[0]
+        hints["weight_hint"] = metric_cols[0] if metric_cols else None
+    # Bubble: need 2+ metrics
+    elif len(metric_cols) >= 3:
+        entity = (airport_cols + airline_cols + [None])[0]
+        hints["suggested_chart"] = "bubble"
+        hints["label_hint"] = entity
+        hints["x_hint"] = metric_cols[0]
+        hints["y_hint"] = metric_cols[1]
+        hints["r_hint"] = metric_cols[2]
+    elif len(metric_cols) >= 1 and (airport_cols or airline_cols):
+        entity = (airport_cols + airline_cols)[0]
+        hints["suggested_chart"] = "bar"
+        hints["label_hint"] = entity
+        hints["value_hint"] = metric_cols[0]
+
+    return hints
+
+
+_CHART_SUGGEST_SYSTEM = (
+    "You are a senior data visualization expert embedded in an airline network intelligence platform. "
+    "You deeply understand airline scheduling data: IATA airport codes, airline codes, flight numbers, "
+    "passenger volumes, seat capacity, load factors, market share, route frequencies, connecting itineraries. "
+    "Your ONLY output is a single valid JSON object — no markdown, no prose, nothing else."
+)
+
+_CHART_SUGGEST_PROMPT = """\
+CONTEXT
+-------
+User question: {query}
+AI answer summary: {answer_snippet}
+
+AVAILABLE COLUMNS (IDs and constants already removed)
+------------------------------------------------------
+{col_profiles}
+
+COLUMN HINTS (pre-computed based on column semantics — trust these strongly):
+{hints_text}
+
+SAMPLE DATA ({n_rows} rows):
+{rows_json}
+
+RULES — read carefully before responding:
+1. CONSTANT columns (cardinality=1, same value in every row) are USELESS for charts. Never use them as axes.
+2. FLAG/ENUM columns (flag_or_category type, e.g. stops=0/1/2, codeshare=0/1) are dimension groupings, NOT metrics. Never use them as a y-axis value or weight.
+3. airport_code columns are the best source/target nodes for network charts.
+4. numeric_metric columns (pax, seats, flights, freq, revenue) are the best values/weights.
+5. If the query involves connecting flights, routing, ODs, flow, or markets — STRONGLY prefer "network".
+6. A bar chart of "stops by origin" or "stops by market_origin" is WRONG and USELESS. Never do this.
+7. Only use "bar" if there is NO origin+destination pair available.
+
+Chart type reference:
+  "network"  — source_col (airport/airline) → target_col (airport/airline), weight_col = traffic metric
+  "bubble"   — x_col, y_col, r_col all numeric_metric; label_col = airport or airline code
+  "bar"      — label_col = category (airport/airline); value_col = one numeric_metric
+  "pie"      — only for share/pct data summing to 100%
+  "scatter"  — exactly 2 continuous metrics, no natural size
+
+Return ONLY valid JSON (omit unused keys):
+{{
+  "chart_type": "network|bubble|bar|pie|scatter",
+  "title": "<specific, insightful title — name the actual airports/airlines/metric>",
+  "source_col": "<(network) origin or source airport/airline column>",
+  "target_col": "<(network) destination or target airport/airline column>",
+  "weight_col": "<(network) traffic volume column>",
+  "label_col": "<(bubble/bar/scatter) entity identifier>",
+  "x_col":     "<(bubble/scatter) numeric metric for x>",
+  "y_col":     "<(bubble/scatter) numeric metric for y>",
+  "r_col":     "<(bubble) numeric metric for size>",
+  "value_col": "<(bar/pie) numeric metric>"
+}}
+"""
+
+
+def suggest_chart_spec(
+    query: str,
+    answer: str,
+    columns: List[str],
+    rows: List[Dict],
+) -> Optional[Dict]:
+    """
+    Ask Gemini to pick the best chart type for the given data.
+    Pre-filters junk/constant/flag columns, sends rich profiles + pre-computed hints.
+    """
+    import json as _json
+    from app.ai.vertex_client import generate_content, is_available, extract_text
+
+    if not is_available() or not columns or not rows:
+        return None
+
+    # ── Strip junk columns ────────────────────────────────────────────────────
+    clean_cols = [c for c in columns if not _is_junk_col(c)]
+    if not clean_cols:
+        clean_cols = columns
+
+    # ── Build rich profiles ───────────────────────────────────────────────────
+    profiles: dict = {c: _col_profile(c, rows) for c in clean_cols}
+
+    # Drop constant columns (zero chart value), but keep at least 2 cols
+    useful_cols = [c for c in clean_cols if not profiles[c]["constant"]]
+    if len(useful_cols) >= 2:
+        clean_cols = useful_cols
+        profiles = {c: profiles[c] for c in clean_cols}
+
+    # ── Pre-select column hints ───────────────────────────────────────────────
+    hints = _select_chart_columns(profiles)
+
+    # Format profiles for prompt
+    col_profiles_lines = []
+    for c in clean_cols:
+        p = profiles[c]
+        flags = ""
+        if p["flag_numeric"]:
+            flags += "  ⚠ FLAG/ENUM — do NOT use as metric"
+        if p["constant"]:
+            flags += "  ⚠ CONSTANT — useless for charts"
+        col_profiles_lines.append(
+            f"  {c!r:32s} type={p['type']:20s} cardinality={p['cardinality']:4d}"
+            f"  e.g. {', '.join(p['sample'][:4])}{flags}"
+        )
+    col_profiles_str = "\n".join(col_profiles_lines)
+
+    hints_lines = []
+    if hints:
+        hints_lines.append(f"  Recommended chart type: {hints.get('suggested_chart','?').upper()}")
+        for k, v in hints.items():
+            if k != "suggested_chart" and v:
+                hints_lines.append(f"  {k}: {v}")
+    hints_text = "\n".join(hints_lines) if hints_lines else "  (no strong pre-selection — use column profiles above)"
+
+    # ── Build clean sample rows ───────────────────────────────────────────────
+    clean_rows = [{c: r.get(c) for c in clean_cols} for r in rows[:15]]
+    try:
+        rows_json = _json.dumps(clean_rows, default=str)
+        if len(rows_json) > 3000:
+            rows_json = _json.dumps(clean_rows[:6], default=str)
+    except Exception:
+        rows_json = str(clean_rows)[:2000]
+
+    prompt_text = _CHART_SUGGEST_PROMPT.format(
+        query=query[:300],
+        answer_snippet=answer[:500],
+        col_profiles=col_profiles_str,
+        hints_text=hints_text,
+        n_rows=len(clean_rows),
+        rows_json=rows_json,
+    )
+
+    try:
+        resp = generate_content(
+            contents=[{"role": "user", "parts": [{"text": prompt_text}]}],
+            system_instruction=_CHART_SUGGEST_SYSTEM,
+            temperature=0.0,
+        )
+        raw = extract_text(resp)
+        if not raw:
+            return None
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        raw = raw.strip().rstrip("```").strip()
+        spec = _json.loads(raw)
+        if not isinstance(spec, dict) or "chart_type" not in spec:
+            return None
+
+        # Validate chosen columns exist; clear invalid ones
+        valid = set(clean_cols)
+        for key in ("x_col","y_col","r_col","label_col","source_col","target_col","weight_col","value_col"):
+            if key in spec and spec[key]:
+                if spec[key] not in valid:
+                    match = next((c for c in clean_cols if c.lower() == str(spec[key]).lower()), None)
+                    spec[key] = match
+
+        # Attach data
+        spec["columns"] = clean_cols
+        spec["rows"] = [{c: r.get(c) for c in clean_cols} for r in rows[:80]]
+        return spec
+    except Exception:
+        return None
+

@@ -13,7 +13,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-_MAX_CONTENTS_TURNS = 20   # keep last N Vertex AI content objects (user+model pairs)
+_MAX_CONTENTS_TURNS = 12   # keep last N Vertex AI content objects (user+model pairs)
 _SESSION_TTL        = 7200  # seconds (2 hours)
 
 # ── Storage ───────────────────────────────────────────────────────────────────
