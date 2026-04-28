@@ -1216,6 +1216,23 @@
       rgba(0,0,0,0.04) 2px, rgba(0,0,0,0.04) 4px);
   }
 
+  /* ── KG node label overlay ── */
+  #kg-label-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 2; overflow: hidden; }
+  #kg-label-overlay span {
+    position: absolute; font: bold 11px/1 'Courier New', monospace;
+    transform: translate(-50%, -100%); white-space: nowrap;
+    text-shadow: 0 0 5px #000, 0 0 10px #000; opacity: 0.92;
+    transition: opacity 0.3s;
+  }
+  #kg-label-overlay span.kg-host-lbl {
+    font-size: 14px; font-weight: 900; color: #fff;
+    animation: kg-host-pulse 1.1s ease-in-out infinite;
+  }
+  @keyframes kg-host-pulse {
+    0%,100% { text-shadow: 0 0 8px #6366f1, 0 0 20px #6366f1, 0 0 40px #6366f1; opacity: 1; }
+    50%      { text-shadow: 0 0 4px #6366f1; opacity: 0.65; }
+  }
+
   /* ── Top-left brand ── */
   #kg-brand-tl {
     position: absolute; top: 28px; left: 32px; z-index: 3;
@@ -1336,6 +1353,7 @@
 <!-- ── KG Boot Loader ─────────────────────────────────────────────────────────── -->
 <div id="kg-loader">
   <div id="kg-canvas"></div>
+  <div id="kg-label-overlay"></div>
 
   <!-- Top-left: brand -->
   <div id="kg-brand-tl">
@@ -8738,22 +8756,29 @@ document.addEventListener('DOMContentLoaded', () => {
       // ── Init ForceGraph3D ──
       setPhase('Initialising 3D knowledge graph engine…', 2);
 
-      // Helper: create floating text sprite for node labels
-      function _makeLabel(text, color) {
-        const c = document.createElement('canvas');
-        c.width = 256; c.height = 52;
-        const cx = c.getContext('2d');
-        cx.font = 'bold 22px monospace';
-        cx.fillStyle = color || '#e2e8f0';
-        cx.textAlign = 'center';
-        cx.shadowColor = '#000'; cx.shadowBlur = 6;
-        cx.fillText(text, 128, 34);
-        const tex = new THREE.CanvasTexture(c);
-        const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
-        const r = Math.cbrt(SCHEMA[text] ? (SCHEMA[text].val || 8) : 8) * 3.5;
-        spr.position.set(0, r + 9, 0);
-        spr.scale.set(48, 11, 1);
-        return spr;
+      // ── CSS label overlay (no THREE dependency) ──
+      const _labelOverlay = document.getElementById('kg-label-overlay');
+      const _labelEls = new Map();
+      const LABEL_TYPES = new Set(['host','hub','reghub','competitor','alliance']);
+      let _labelRaf = null;
+      function _syncLabels() {
+        if (!Graph || !_labelOverlay) return;
+        for (const n of _gNodes) {
+          if (!LABEL_TYPES.has(n.type) || !isFinite(n.x) || !isFinite(n.y)) continue;
+          const sc = Graph.graph2ScreenCoords(n.x, n.y, n.z || 0);
+          if (!_labelEls.has(n.id)) {
+            const el = document.createElement('span');
+            el.textContent = n.label;
+            el.style.color = n.color;
+            if (n.type === 'host') el.classList.add('kg-host-lbl');
+            _labelOverlay.appendChild(el);
+            _labelEls.set(n.id, el);
+          }
+          const el = _labelEls.get(n.id);
+          el.style.left = sc.x + 'px';
+          el.style.top  = (sc.y - 16) + 'px';
+        }
+        _labelRaf = requestAnimationFrame(_syncLabels);
       }
 
       Graph = ForceGraph3D()(container)
@@ -8763,37 +8788,11 @@ document.addEventListener('DOMContentLoaded', () => {
         .showNavInfo(false)
         .enablePointerInteraction(false)
         .nodeId('id')
-        .nodeLabel(n => `${n.type.toUpperCase()} · ${n.label}`)
+        .nodeLabel(() => '')
         .nodeColor(n => n.color)
         .nodeVal(n => n.val)
         .nodeOpacity(0.92)
         .nodeResolution(12)
-        .nodeThreeObjectExtend(true)
-        .nodeThreeObject(n => {
-          // Floating label for prominent node types
-          if (!['host','hub','reghub','competitor','alliance'].includes(n.type)) return null;
-          const group = new THREE.Group();
-          // Text label sprite
-          const lbl = _makeLabel(n.label, n.type === 'host' ? '#ffffff' : n.color);
-          group.add(lbl);
-          // Pulsing ring for host
-          if (n.type === 'host') {
-            const ring = new THREE.Mesh(
-              new THREE.TorusGeometry(14, 1.0, 8, 64),
-              new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.7 })
-            );
-            group.add(ring); group._ring = ring;
-          }
-          return group;
-        })
-        .onEngineTick(() => {
-          const hn = _gNodes.find(n => n.type === 'host');
-          if (hn && hn.__threeObj && hn.__threeObj._ring) {
-            const ring = hn.__threeObj._ring;
-            ring.material.opacity = 0.3 + 0.5 * Math.sin(performance.now() / 500);
-            ring.rotation.x += 0.012; ring.rotation.y += 0.007;
-          }
-        })
         .linkColor(l => l.color || '#3b82f640')
         .linkWidth(l => l.w || 0.3)
         .linkOpacity(0.5)
@@ -8807,6 +8806,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // Disable orbit controls for read-only splash view
       try { if (Graph.controls()) Graph.controls().enabled = false; } catch(_e) {}
+
+      // Start CSS label tracking loop
+      _syncLabels();
 
       window.addEventListener('resize', () => {
         if (Graph) Graph.width(window.innerWidth).height(window.innerHeight);
@@ -9010,12 +9012,14 @@ document.addEventListener('DOMContentLoaded', () => {
       }));
 
       overlay.style.opacity = '0';
+      cancelAnimationFrame(_labelRaf); // stop label tracking
       if (Graph) Graph.pauseAnimation();
       await delay(950);
       overlay.style.display = 'none';
       window.dispatchEvent(new CustomEvent('kg-ready', { detail: persona }));
     } catch (err) {
       console.warn('KG loader error:', err);
+      cancelAnimationFrame(_labelRaf);
       overlay.style.transition = 'opacity 0.5s';
       overlay.style.opacity = '0';
       setTimeout(() => { overlay.style.display = 'none'; }, 600);
