@@ -1206,7 +1206,7 @@
     background: #070b16; overflow: hidden;
     transition: opacity 0.9s ease;
   }
-  #kg-canvas { position: absolute; inset: 0; width: 100%; height: 100%; overflow: hidden; }
+  #kg-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 
   /* Subtle scanline overlay */
   #kg-loader::after {
@@ -1214,23 +1214,6 @@
     background: repeating-linear-gradient(0deg,
       transparent, transparent 2px,
       rgba(0,0,0,0.04) 2px, rgba(0,0,0,0.04) 4px);
-  }
-
-  /* ── KG node label overlay ── */
-  #kg-label-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 2; overflow: hidden; }
-  #kg-label-overlay span {
-    position: absolute; font: bold 11px/1 'Courier New', monospace;
-    transform: translate(-50%, -100%); white-space: nowrap;
-    text-shadow: 0 0 5px #000, 0 0 10px #000; opacity: 0.92;
-    transition: opacity 0.3s;
-  }
-  #kg-label-overlay span.kg-host-lbl {
-    font-size: 14px; font-weight: 900; color: #fff;
-    animation: kg-host-pulse 1.1s ease-in-out infinite;
-  }
-  @keyframes kg-host-pulse {
-    0%,100% { text-shadow: 0 0 8px #6366f1, 0 0 20px #6366f1, 0 0 40px #6366f1; opacity: 1; }
-    50%      { text-shadow: 0 0 4px #6366f1; opacity: 0.65; }
   }
 
   /* ── Top-left brand ── */
@@ -1352,8 +1335,7 @@
 
 <!-- ── KG Boot Loader ─────────────────────────────────────────────────────────── -->
 <div id="kg-loader">
-  <div id="kg-canvas"></div>
-  <div id="kg-label-overlay"></div>
+  <canvas id="kg-canvas"></canvas>
 
   <!-- Top-left: brand -->
   <div id="kg-brand-tl">
@@ -8577,72 +8559,274 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // ── KG Boot Loader ────────────────────────────────────────────────────────────
 (function _kgBootLoader() {
-  const overlay   = document.getElementById('kg-loader');
-  const container = document.getElementById('kg-canvas');
-  if (!overlay || !container) return;
+  const overlay = document.getElementById('kg-loader');
+  const canvas  = document.getElementById('kg-canvas');
+  if (!overlay || !canvas) return;
 
-  // ── Entity schema: color + 3D sphere volume (val) ──
+  const ctx = canvas.getContext('2d');
+  let W, H;
+  function resize() { W = canvas.width = window.innerWidth; H = canvas.height = window.innerHeight; }
+  resize();
+  window.addEventListener('resize', () => { resize(); if (sim) sim.force('center', d3Force.forceCenter(W/2, H/2)).restart(); });
+
+  // ── Entity schema ──────────────────────────────────────────────────────────
   const SCHEMA = {
-    host:       { color: '#6366f1', val: 220, nerTag: 'AIRLINE · HOST' },
-    hub:        { color: '#22d3ee', val: 55,  nerTag: 'AIRPORT · HUB' },
-    reghub:     { color: '#0ea5e9', val: 18,  nerTag: 'AIRPORT · REGIONAL HUB' },
-    station:    { color: '#3b82f6', val: 5,   nerTag: 'AIRPORT · STATION' },
-    competitor: { color: '#f59e0b', val: 22,  nerTag: 'AIRLINE · COMPETITOR' },
-    equipment:  { color: '#f87171', val: 6,   nerTag: 'EQUIPMENT · AIRCRAFT' },
-    alliance:   { color: '#60a5fa', val: 30,  nerTag: 'ALLIANCE · GROUP' },
+    host:       { color:'#6366f1', glow:'#818cf8', r:26, charge:-2200, nerTag:'AIRLINE · HOST' },
+    hub:        { color:'#22d3ee', glow:'#67e8f9', r:16, charge:-750,  nerTag:'AIRPORT · HUB' },
+    reghub:     { color:'#0ea5e9', glow:'#38bdf8', r:10, charge:-260,  nerTag:'AIRPORT · REGIONAL HUB' },
+    station:    { color:'#3b82f6', glow:'#93c5fd', r:5,  charge:-55,   nerTag:'AIRPORT · STATION' },
+    competitor: { color:'#f59e0b', glow:'#fcd34d', r:11, charge:-360,  nerTag:'AIRLINE · COMPETITOR' },
+    equipment:  { color:'#f87171', glow:'#fca5a5', r:5,  charge:-55,   nerTag:'EQUIPMENT · AIRCRAFT' },
+    alliance:   { color:'#60a5fa', glow:'#93c5fd', r:13, charge:-310,  nerTag:'ALLIANCE · GROUP' },
   };
 
-  // ── Graph state ──
-  let _gNodes = [], _gLinks = [];
+  // ── Graph state ────────────────────────────────────────────────────────────
+  let nodes = [], links = [];
   const nodeById = new Map();
-  let Graph = null;
+  let sim = null, rafId = null;
+  let _bootDone = false;
 
-  // ── UI elements ──
+  // ── Particle system (moving dots on backbone links) ────────────────────────
+  const _particles = [];
+  function _spawnParticle(link) {
+    _particles.push({ link, t: Math.random(), speed: 0.0018 + Math.random() * 0.0025, r: 1.2 + Math.random() * 0.8 });
+  }
+
+  // ── rAF-based draw (never registered as sim.on('tick') to prevent crash) ───
+  function draw() {
+    try {
+      ctx.clearRect(0, 0, W, H);
+
+      // Background – dark space gradient
+      const bg = ctx.createRadialGradient(W/2, H/2, 0, W/2, H/2, Math.hypot(W, H) * 0.6);
+      bg.addColorStop(0, '#0d1425');
+      bg.addColorStop(1, '#04060f');
+      ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+
+      const now = performance.now();
+
+      // ── Links ────────────────────────────────────────────────────────────
+      for (const l of links) {
+        try {
+          const s = l.source, t = l.target;
+          if (typeof s !== 'object' || typeof t !== 'object') continue;
+          if (!isFinite(s.x) || !isFinite(s.y) || !isFinite(t.x) || !isFinite(t.y)) continue;
+
+          const baseAlpha = l._bb ? 0.5 : (l._demand ? 0.22 : 0.10);
+          ctx.globalAlpha = baseAlpha;
+          ctx.lineWidth   = Math.max(0.3, l.w || 0.5);
+          ctx.strokeStyle = l._color || '#3b82f618';
+          ctx.beginPath();
+
+          if (l._bb && (l.w || 0) >= 1.0) {
+            // Curved arc for backbone links
+            const bend = 0.18;
+            const mx = (s.x + t.x) / 2 + (t.y - s.y) * bend;
+            const my = (s.y + t.y) / 2 - (t.x - s.x) * bend;
+            ctx.moveTo(s.x, s.y); ctx.quadraticCurveTo(mx, my, t.x, t.y);
+          } else {
+            ctx.moveTo(s.x, s.y); ctx.lineTo(t.x, t.y);
+          }
+          ctx.stroke();
+
+          // High-demand pulse overlay
+          if (l._high_spill) {
+            ctx.globalAlpha = 0.25 + 0.25 * Math.sin(now / 380 + (l._phase || 0));
+            ctx.strokeStyle = '#f59e0b'; ctx.lineWidth = 2; ctx.stroke();
+          }
+          ctx.globalAlpha = 1;
+        } catch (e) {}
+      }
+
+      // ── Particles ────────────────────────────────────────────────────────
+      for (const p of _particles) {
+        try {
+          const s = p.link.source, e = p.link.target;
+          if (typeof s !== 'object' || typeof e !== 'object') continue;
+          if (!isFinite(s.x) || !isFinite(s.y) || !isFinite(e.x) || !isFinite(e.y)) continue;
+          p.t = (p.t + p.speed) % 1;
+          const px = s.x + (e.x - s.x) * p.t;
+          const py = s.y + (e.y - s.y) * p.t;
+          if (!isFinite(px) || !isFinite(py)) continue;
+          ctx.beginPath(); ctx.arc(px, py, p.r, 0, Math.PI * 2);
+          ctx.fillStyle = '#a5b4fc'; ctx.globalAlpha = 0.75; ctx.fill();
+          ctx.globalAlpha = 1;
+        } catch (e) {}
+      }
+
+      // ── Nodes ─────────────────────────────────────────────────────────────
+      for (const n of nodes) {
+        try {
+          if (!isFinite(n.x) || !isFinite(n.y)) continue;
+          const s = SCHEMA[n.type] || SCHEMA.station;
+          const r = Math.max(2, s.r);
+
+          // Outer glow halo
+          const gr = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, r * 3.2);
+          gr.addColorStop(0,   s.glow + 'bb');
+          gr.addColorStop(0.4, s.color + '55');
+          gr.addColorStop(1,   'rgba(0,0,0,0)');
+          ctx.fillStyle = gr;
+          ctx.beginPath(); ctx.arc(n.x, n.y, r * 3.2, 0, Math.PI * 2); ctx.fill();
+
+          // Core sphere with internal gradient
+          const cr = ctx.createRadialGradient(n.x - r*0.3, n.y - r*0.3, 0, n.x, n.y, r);
+          cr.addColorStop(0,   '#ffffffcc');
+          cr.addColorStop(0.3, s.glow);
+          cr.addColorStop(1,   s.color);
+          ctx.fillStyle = cr;
+          ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, Math.PI * 2); ctx.fill();
+
+          // Host: dual pulsing rings + bright core
+          if (n.type === 'host') {
+            for (let ri = 0; ri < 3; ri++) {
+              const pulse = Math.sin(now / 600 + ri * 2.1);
+              const ringR = Math.max(1, r + 10 + ri * 9 + 4 * pulse);
+              ctx.beginPath(); ctx.arc(n.x, n.y, ringR, 0, Math.PI * 2);
+              ctx.strokeStyle = ri === 0 ? '#818cf8' : '#6366f155';
+              ctx.lineWidth = ri === 0 ? 2.5 : 1.2;
+              ctx.globalAlpha = (0.8 - ri * 0.2) * (0.5 + 0.5 * pulse);
+              ctx.stroke(); ctx.globalAlpha = 1;
+            }
+            // White core dot
+            ctx.beginPath(); ctx.arc(n.x, n.y, 4, 0, Math.PI * 2);
+            ctx.fillStyle = '#fff'; ctx.fill();
+          }
+
+          // Node label
+          if (['host','hub','reghub','competitor','alliance'].includes(n.type)) {
+            const fs = n.type === 'host' ? 'bold 13px' : (n.type === 'hub' ? 'bold 11px' : 'bold 9px');
+            ctx.font = fs + ' "Courier New", monospace';
+            ctx.fillStyle = n.type === 'host' ? '#ffffff' : s.glow;
+            ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+            ctx.shadowColor = s.color; ctx.shadowBlur = n.type === 'host' ? 14 : 7;
+            ctx.fillText(n.label || n.id, n.x, n.y - r - 5);
+            ctx.shadowBlur = 0;
+          }
+        } catch (e) {}
+      }
+    } catch (e) { console.warn('KG draw error:', e); }
+  }
+
+  function startLoop() {
+    if (rafId) return;
+    (function loop() { draw(); rafId = requestAnimationFrame(loop); })();
+  }
+  function stopLoop() { if (rafId) { cancelAnimationFrame(rafId); rafId = null; } }
+
+  // ── Simulation ─────────────────────────────────────────────────────────────
+  function buildSim() {
+    if (sim) sim.stop();
+    sim = d3Force.forceSimulation(nodes)
+      .force('link',    d3Force.forceLink(links).id(d => d.id)
+        .distance(d => d._bb ? (d.source.type === 'host' ? 200 : 130) : 80)
+        .strength(0.5))
+      .force('charge',  d3Force.forceManyBody()
+        .strength(d => (SCHEMA[d.type] || SCHEMA.station).charge)
+        .distanceMax(550))
+      .force('center',  d3Force.forceCenter(W/2, H/2).strength(0.05))
+      .force('x',       d3Force.forceX(W/2).strength(0.02))
+      .force('y',       d3Force.forceY(H/2).strength(0.02))
+      .force('collide', d3Force.forceCollide(d => (SCHEMA[d.type] || SCHEMA.station).r * 2.0).strength(0.7))
+      .alphaDecay(0.01).velocityDecay(0.28)
+      .alphaTarget(0.3);  // keep hot during boot
+    return sim;
+  }
+
+  function flushSim() {
+    if (!sim) { buildSim(); return; }
+    sim.nodes(nodes);
+    sim.force('link').links(links);
+    sim.alpha(Math.max(sim.alpha(), 0.22)).restart();
+  }
+
+  // ── Node / link helpers ────────────────────────────────────────────────────
+  function addNode(type, id, label) {
+    if (nodeById.has(id)) return nodeById.get(id);
+    const s = SCHEMA[type] || SCHEMA.station;
+    const a = Math.random() * Math.PI * 2;
+    const dist = { host:0, hub:W*0.14, reghub:W*0.21, competitor:W*0.27, alliance:W*0.27, equipment:W*0.32, station:W*0.35 }[type] || W*0.35;
+    const n = { id, label: label || id, type,
+      x: W/2 + Math.cos(a)*dist + (Math.random()-0.5)*50,
+      y: H/2 + Math.sin(a)*dist + (Math.random()-0.5)*50 };
+    nodeById.set(id, n);
+    nodes.push(n);
+
+    const host = nodes.find(n => n.type === 'host');
+    if (type === 'hub' && host) {
+      const lk = { source: host.id, target: id, w:2.0, _bb:true, _color: s.color + '99' };
+      links.push(lk); _spawnParticle(lk); _spawnParticle(lk);
+    }
+    if (type === 'reghub') {
+      const hubs = nodes.filter(n => n.type === 'hub');
+      const tgt = hubs[Math.floor(Math.random()*hubs.length)] || host;
+      if (tgt) links.push({ source:tgt.id, target:id, w:1.2, _bb:true, _color: s.color + '77' });
+    }
+    if (type === 'competitor') {
+      const hubs = nodes.filter(n => n.type === 'hub');
+      const tgt = hubs.length ? hubs[Math.floor(Math.random()*Math.min(4,hubs.length))] : host;
+      if (tgt) links.push({ source:tgt.id, target:id, w:1.0, _bb:true, _color: s.color + '66' });
+    }
+    if (type === 'equipment' && host) {
+      links.push({ source:host.id, target:id, w:0.4, _bb:true, _color: s.color + '44' });
+    }
+    if (type === 'alliance') {
+      const hubs = nodes.filter(n => n.type === 'hub');
+      const tgt = hubs.length ? hubs[Math.floor(Math.random()*Math.min(3,hubs.length))] : host;
+      if (tgt) links.push({ source:tgt.id, target:id, w:0.8, _bb:true, _color: s.color + '55' });
+    }
+    return n;
+  }
+
+  function addRouteLink(o, d, flights) {
+    if (!nodeById.has(o) || !nodeById.has(d)) return null;
+    const w = Math.max(0.2, Math.min(2.8, flights / 650));
+    const lk = { source:o, target:d, w, _color:'#3b82f618' };
+    links.push(lk);
+    return lk;
+  }
+
+  // ── UI helpers ─────────────────────────────────────────────────────────────
   const nerEl     = document.getElementById('kg-ner-label');
   const phaseEl   = document.getElementById('kg-phase');
   const counterEl = document.getElementById('kg-counters');
   const fillEl    = document.getElementById('kg-progress-fill');
-
-  const SCRAMBLE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%*<>/\\|';
+  const SCRAMBLE  = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%*<>/\\|';
   let _nerTimers = [], _nerTarget = '';
-  let _phaseTimers = [], _phaseTarget = '';
+  let _phTimers  = [], _phTarget  = '';
 
-  // ── NER scramble-then-settle ──
   function flashNER(tag, id) {
     if (!nerEl) return;
     _nerTimers.forEach(clearTimeout); _nerTimers.length = 0;
     const text = `[ ${tag} ]  ${id}`;
-    _nerTarget = text;
-    nerEl.style.opacity = '1';
+    _nerTarget = text; nerEl.style.opacity = '1';
     let i = 0, sf = 0;
-    function nerTick() {
+    function tick() {
       if (_nerTarget !== text) return;
       if (sf < 3 && i < text.length) {
-        nerEl.textContent = text.slice(0, i) + SCRAMBLE_CHARS[Math.floor(Math.random() * SCRAMBLE_CHARS.length)];
-        sf++; _nerTimers.push(setTimeout(nerTick, 9));
+        nerEl.textContent = text.slice(0,i) + SCRAMBLE[Math.floor(Math.random()*SCRAMBLE.length)];
+        sf++; _nerTimers.push(setTimeout(tick, 9));
       } else {
-        nerEl.textContent = text.slice(0, ++i); sf = 0;
-        if (i < text.length) _nerTimers.push(setTimeout(nerTick, 9));
+        nerEl.textContent = text.slice(0,++i); sf = 0;
+        if (i < text.length) _nerTimers.push(setTimeout(tick, 9));
       }
     }
-    nerTick();
+    tick();
     clearTimeout(nerEl._t);
     nerEl._t = setTimeout(() => { nerEl.style.opacity = '0'; }, 1400);
   }
 
-  // ── Phase typewriter ──
   function setPhase(text, pct) {
     if (fillEl) fillEl.style.width = pct + '%';
     if (!phaseEl) return;
-    _phaseTimers.forEach(clearTimeout); _phaseTimers.length = 0;
-    _phaseTarget = text;
-    phaseEl.classList.add('kg-typing');
+    _phTimers.forEach(clearTimeout); _phTimers.length = 0;
+    _phTarget = text; phaseEl.classList.add('kg-typing');
     let i = 0;
     const speed = Math.max(6, Math.min(20, 280 / Math.max(text.length, 1)));
     function tick() {
-      if (_phaseTarget !== text) { phaseEl.classList.remove('kg-typing'); return; }
+      if (_phTarget !== text) { phaseEl.classList.remove('kg-typing'); return; }
       phaseEl.textContent = text.slice(0, i++);
-      if (i <= text.length) _phaseTimers.push(setTimeout(tick, speed));
+      if (i <= text.length) _phTimers.push(setTimeout(tick, speed));
       else phaseEl.classList.remove('kg-typing');
     }
     tick();
@@ -8650,61 +8834,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function updateCounters() {
     if (!counterEl) return;
-    const a = _gNodes.filter(n => n.type === 'host' || n.type === 'competitor').length;
-    const p = _gNodes.filter(n => ['hub','reghub','station'].includes(n.type)).length;
-    const e = _gNodes.filter(n => n.type === 'equipment').length;
+    const a = nodes.filter(n => n.type === 'host' || n.type === 'competitor').length;
+    const p = nodes.filter(n => ['hub','reghub','station'].includes(n.type)).length;
+    const e = nodes.filter(n => n.type === 'equipment').length;
     counterEl.innerHTML =
       `<span style="color:#818cf8">${a} airlines</span> &nbsp;·&nbsp; ` +
       `<span style="color:#22d3ee">${p} airports</span> &nbsp;·&nbsp; ` +
       `<span style="color:#f87171">${e} equip</span> &nbsp;·&nbsp; ` +
-      `<span style="color:#475569">${_gLinks.length} edges</span>`;
+      `<span style="color:#475569">${links.length} edges</span>`;
   }
 
-  // ── Node management ──
-  function addNodeTracked(type, id, label) {
-    if (nodeById.has(id)) return nodeById.get(id);
-    const s = SCHEMA[type] || SCHEMA.station;
-    const n = { id, label: label || id, type, color: s.color, val: s.val, nerTag: s.nerTag };
-    nodeById.set(id, n);
-    _gNodes.push(n);
-    // Backbone structural links
-    const hostNode = _gNodes.find(n => n.type === 'host');
-    if (type === 'hub' && hostNode) {
-      _gLinks.push({ source: hostNode.id, target: id, w: 2.0, color: s.color + '88', _bb: true });
-    }
-    if (type === 'reghub') {
-      const hubs = _gNodes.filter(n => n.type === 'hub');
-      const tgt = hubs[Math.floor(Math.random() * hubs.length)] || hostNode;
-      if (tgt) _gLinks.push({ source: tgt.id, target: id, w: 1.2, color: s.color + '66', _bb: true });
-    }
-    if (type === 'competitor') {
-      const hubs = _gNodes.filter(n => n.type === 'hub');
-      const tgt = hubs.length ? hubs[Math.floor(Math.random() * Math.min(4, hubs.length))] : hostNode;
-      if (tgt) _gLinks.push({ source: tgt.id, target: id, w: 1.0, color: s.color + '55', _bb: true });
-    }
-    if (type === 'equipment' && hostNode) {
-      _gLinks.push({ source: hostNode.id, target: id, w: 0.4, color: s.color + '44', _bb: true });
-    }
-    if (type === 'alliance') {
-      const hubs = _gNodes.filter(n => n.type === 'hub');
-      const tgt = hubs.length ? hubs[Math.floor(Math.random() * Math.min(3, hubs.length))] : hostNode;
-      if (tgt) _gLinks.push({ source: tgt.id, target: id, w: 0.8, color: s.color + '55', _bb: true });
-    }
-    // NOTE: do NOT call graphData() here — caller must flush after batch
-    return n;
-  }
-
-  function addRouteLink(o, d, flights) {
-    if (!nodeById.has(o) || !nodeById.has(d)) return;
-    const w = Math.max(0.15, Math.min(2.5, flights / 700));
-    _gLinks.push({ source: o, target: d, w, color: '#3b82f640' });
-  }
-
-  function flushLinks() {
-    if (Graph) Graph.graphData({ nodes: _gNodes, links: _gLinks });
-  }
-
-  // ── NER-based persona identification ──
+  // ── Persona identification ─────────────────────────────────────────────────
   function identifyPersona(summary, profile, kgVizData) {
     const kgData     = kgVizData || {};
     const baseRoutes = kgData.base_routes   || [];
@@ -8713,18 +8853,18 @@ document.addEventListener('DOMContentLoaded', () => {
     for (const r of baseRoutes) {
       totalDemand += (r.demand || 0); totalPax += (r.pax || 0); totalSpill += (r.spill || 0);
     }
-    const avgLF     = totalDemand > 0 ? totalPax / totalDemand : 0;
-    const spillRate = totalDemand > 0 ? totalSpill / totalDemand : 0;
+    const avgLF      = totalDemand > 0 ? totalPax / totalDemand : 0;
+    const spillRate  = totalDemand > 0 ? totalSpill / totalDemand : 0;
     const highSpillN = spillMkts.filter(m => (m.spill || 0) > 0).length;
     const host       = (profile?.profile?.host_airline || '').toUpperCase();
     const avgBlock   = summary?.avg_block_min  || 0;
     const origins    = summary?.origins        || 0;
     const aircraftN  = summary?.aircraft_types || 0;
     const competitors = profile?.profile?.top_competitors || [];
-    const ULCC_CODES = ['F9','NK','G4','SY','P0','VB','W6','FR','U2','EI'];
-    const IS_ULCC = ULCC_CODES.includes(host);
-    if (IS_ULCC && spillRate > 0.05) return { key:'revenue', icon:'🔥', label:'Capacity Growth Strategist', color:'#dc2626' };
-    if (IS_ULCC && origins > 150)    return { key:'revenue', icon:'🚀', label:'ULCC Growth Strategist',     color:'#059669' };
+    const ULCC = ['F9','NK','G4','SY','P0','VB','W6','FR','U2','EI'];
+    const IS_ULCC = ULCC.includes(host);
+    if (IS_ULCC && spillRate > 0.05) return { key:'revenue', icon:'🔥', label:'Capacity Growth Strategist',       color:'#dc2626' };
+    if (IS_ULCC && origins > 150)    return { key:'revenue', icon:'🚀', label:'ULCC Growth Strategist',           color:'#059669' };
     if (avgLF > 0.80 && highSpillN > 20) return { key:'revenue', icon:'📈', label:'Yield Maximization Strategist', color:'#7c3aed' };
     if (avgBlock > 300 && origins > 150) return { key:'network', icon:'🌐', label:'Long-Haul Network Analyst',     color:'#667eea' };
     if (origins > 150 && aircraftN > 15) return { key:'ops',     icon:'⚙️', label:'Fleet & Network Optimiser',     color:'#64748b' };
@@ -8732,7 +8872,7 @@ document.addEventListener('DOMContentLoaded', () => {
     return { key:'network', icon:'🗺️', label:'Network Expansion Analyst', color:'#667eea' };
   }
 
-  // ── Main boot sequence ──
+  // ── Main boot sequence ─────────────────────────────────────────────────────
   async function run() {
     const delay = ms => new Promise(r => setTimeout(r, ms));
     try {
@@ -8743,254 +8883,189 @@ document.addEventListener('DOMContentLoaded', () => {
       ]);
       window._kgVizData = kgViz;
 
-      const prof     = profile?.profile || {};
-      const hostCode = (prof.host_airline || 'F9').toUpperCase();
+      const prof       = profile?.profile || {};
+      const hostCode   = (prof.host_airline || 'F9').toUpperCase();
       const allAirports = kgViz.airports || [];
-      const megaHubs    = allAirports.slice(0,  8).map(a => a.iata);
-      const regHubs     = allAirports.slice(8, 25).map(a => a.iata);
-      const stations    = allAirports.slice(25).map(a => a.iata);
+      const megaHubs   = allAirports.slice(0,  8).map(a => a.iata);
+      const regHubs    = allAirports.slice(8, 25).map(a => a.iata);
+      const stations   = allAirports.slice(25).map(a => a.iata);
       const allAirlines = (kgViz.airlines || []).map(a => a.iata);
       const competitors = allAirlines.filter(a => a !== hostCode);
       const routeEdges  = kgViz.routes || [];
 
-      // ── Init ForceGraph3D ──
-      setPhase('Initialising 3D knowledge graph engine…', 2);
+      startLoop();
 
-      // ── CSS label overlay (no THREE dependency) ──
-      const _labelOverlay = document.getElementById('kg-label-overlay');
-      const _labelEls = new Map();
-      const LABEL_TYPES = new Set(['host','hub','reghub','competitor','alliance']);
-      let _labelRaf = null;
-      function _syncLabels() {
-        if (!Graph || !_labelOverlay) return;
-        for (const n of _gNodes) {
-          if (!LABEL_TYPES.has(n.type) || !isFinite(n.x) || !isFinite(n.y)) continue;
-          const sc = Graph.graph2ScreenCoords(n.x, n.y, n.z || 0);
-          if (!_labelEls.has(n.id)) {
-            const el = document.createElement('span');
-            el.textContent = n.label;
-            el.style.color = n.color;
-            if (n.type === 'host') el.classList.add('kg-host-lbl');
-            _labelOverlay.appendChild(el);
-            _labelEls.set(n.id, el);
-          }
-          const el = _labelEls.get(n.id);
-          el.style.left = sc.x + 'px';
-          el.style.top  = (sc.y - 16) + 'px';
-        }
-        _labelRaf = requestAnimationFrame(_syncLabels);
-      }
-
-      Graph = ForceGraph3D()(container)
-        .width(window.innerWidth)
-        .height(window.innerHeight)
-        .backgroundColor('#07080f')
-        .showNavInfo(false)
-        .enablePointerInteraction(false)
-        .nodeId('id')
-        .nodeLabel(() => '')
-        .nodeColor(n => n.color)
-        .nodeVal(n => n.val)
-        .nodeOpacity(0.92)
-        .nodeResolution(12)
-        .linkColor(l => l.color || '#3b82f640')
-        .linkWidth(l => l.w || 0.3)
-        .linkOpacity(0.5)
-        .linkCurvature(0.1)
-        .linkDirectionalParticles(l => (l._bb && l.w >= 1.5) ? 2 : 0)
-        .linkDirectionalParticleWidth(1.2)
-        .linkDirectionalParticleSpeed(0.004)
-        .d3AlphaDecay(0.008)
-        .d3VelocityDecay(0.3)
-        .graphData({ nodes: _gNodes, links: _gLinks });
-
-      // Disable orbit controls for read-only splash view
-      try { if (Graph.controls()) Graph.controls().enabled = false; } catch(_e) {}
-
-      // Start CSS label tracking loop
-      _syncLabels();
-
-      window.addEventListener('resize', () => {
-        if (Graph) Graph.width(window.innerWidth).height(window.innerHeight);
-      });
-
-      await delay(300);
-
-      // ── Phase 1: Host ──
+      // ── Phase 1: Host ──────────────────────────────────────────────────────
       setPhase('Recognising host airline entity…', 5);
-      addNodeTracked('host', hostCode, hostCode);
-      flushLinks(); flashNER(SCHEMA.host.nerTag, hostCode); updateCounters();
-      await delay(500);
+      addNode('host', hostCode, hostCode);
+      buildSim(); flushSim();
+      flashNER(SCHEMA.host.nerTag, hostCode); updateCounters();
+      await delay(600);
 
-      // ── Phase 2: Mega-hubs ──
+      // ── Phase 2: Mega-hubs ────────────────────────────────────────────────
       setPhase(`Extracting mega-hub airports… [${megaHubs.length} entities]`, 14);
-      for (const ap of megaHubs) {
-        addNodeTracked('hub', ap, ap);
-        flushLinks(); flashNER(SCHEMA.hub.nerTag, ap); updateCounters();
-        await delay(160);
+      for (let i = 0; i < megaHubs.length; i++) {
+        addNode('hub', megaHubs[i], megaHubs[i]);
+        flushSim(); flashNER(SCHEMA.hub.nerTag, megaHubs[i]);
+        updateCounters(); await delay(170);
       }
 
-      // ── Phase 3: Regional hubs ──
+      // ── Phase 3: Regional hubs ────────────────────────────────────────────
       setPhase(`Mapping regional hub airports… [${regHubs.length} entities]`, 26);
       for (let i = 0; i < regHubs.length; i++) {
-        addNodeTracked('reghub', regHubs[i], regHubs[i]);
-        if (i % 2 === 1) flushLinks(); // flush every 2 nodes (~150ms)
+        addNode('reghub', regHubs[i], regHubs[i]);
+        if (i % 2 === 0) flushSim();
         if (i % 4 === 0) flashNER(SCHEMA.reghub.nerTag, regHubs[i]);
-        updateCounters(); await delay(75);
+        updateCounters(); await delay(80);
       }
-      flushLinks();
+      flushSim();
 
-      // ── Phase 4: Stations ──
+      // ── Phase 4: Stations ─────────────────────────────────────────────────
       setPhase(`Building station network… [${stations.length} entities]`, 40);
-      const BATCH = 8;
-      for (let i = 0; i < stations.length; i += BATCH) {
-        const chunk = stations.slice(i, i + BATCH);
-        chunk.forEach(ap => addNodeTracked('station', ap, ap));
-        flushLinks();
-        if (i % (BATCH * 3) === 0) flashNER(SCHEMA.station.nerTag, chunk[0]);
-        updateCounters(); await delay(60);
+      const SB = 8;
+      for (let i = 0; i < stations.length; i += SB) {
+        stations.slice(i, i+SB).forEach(ap => addNode('station', ap, ap));
+        flushSim();
+        if (i % (SB*3) === 0) flashNER(SCHEMA.station.nerTag, stations[i]);
+        updateCounters(); await delay(65);
       }
 
-      // ── Phase 5: Route edges (batch → single flush) ──
+      // ── Phase 5: Route edges ──────────────────────────────────────────────
       setPhase(`Wiring route graph… [${routeEdges.length} real routes]`, 54);
       for (const rt of routeEdges) addRouteLink(rt.o, rt.d, rt.flights);
-      // Flash a few sample routes
-      for (let i = 0; i < Math.min(8, routeEdges.length); i += 1) {
-        flashNER('ROUTE · O-D PAIR', `${routeEdges[i*Math.floor(routeEdges.length/8)].o} → ${routeEdges[i*Math.floor(routeEdges.length/8)].d}`);
+      flushSim();
+      const SAMPLE_N = Math.min(8, routeEdges.length);
+      const step = Math.max(1, Math.floor(routeEdges.length / SAMPLE_N));
+      for (let i = 0; i < routeEdges.length; i += step) {
+        flashNER('ROUTE · O-D PAIR', `${routeEdges[i].o} → ${routeEdges[i].d}`);
         await delay(60);
       }
-      flushLinks(); updateCounters(); await delay(200);
+      updateCounters(); await delay(200);
 
-      // ── Phase 5.5: Demand calibration (BASEDATA) ──
+      // ── Phase 5.5: Demand calibration ─────────────────────────────────────
       const kgBaseRoutes = kgViz.base_routes || [];
       if (kgBaseRoutes.length) {
-        setPhase(`Calibrating demand flows… [${kgBaseRoutes.length} O-D demand records]`, 57);
-        const demandMap = new Map();
-        let totalWeeklyDemand = 0, maxDemand = 0;
+        setPhase(`Calibrating demand flows… [${kgBaseRoutes.length} O-D records]`, 57);
+        const demMap = new Map();
+        let totDmd = 0, maxDmd = 0;
         for (const r of kgBaseRoutes) {
-          demandMap.set(r.o + '→' + r.d, r);
-          demandMap.set(r.d + '→' + r.o, r);
-          totalWeeklyDemand += (r.demand || 0);
-          if ((r.demand || 0) > maxDemand) maxDemand = r.demand;
+          demMap.set(r.o + '→' + r.d, r); demMap.set(r.d + '→' + r.o, r);
+          totDmd += (r.demand || 0);
+          if ((r.demand || 0) > maxDmd) maxDmd = r.demand;
         }
-        if (maxDemand > 0) {
-          const logMax = Math.log(1 + maxDemand);
-          for (const l of _gLinks) {
+        if (maxDmd > 0) {
+          const logMax = Math.log(1 + maxDmd);
+          for (const l of links) {
             const sid = typeof l.source === 'object' ? l.source.id : l.source;
             const tid = typeof l.target === 'object' ? l.target.id : l.target;
-            const d = demandMap.get(sid + '→' + tid);
+            const d = demMap.get(sid + '→' + tid);
             if (d && d.demand > 0) {
-              l.w = Math.max(0.3, Math.min(3.5, 0.4 + 2.8 * Math.log(1 + d.demand) / logMax));
-              l._demand = d.demand; l._lf = d.lf; l._spill = d.spill;
+              l.w       = Math.max(0.3, Math.min(3.5, 0.4 + 2.8 * Math.log(1+d.demand) / logMax));
+              l._demand = true; l._lf = d.lf; l._spill_val = d.spill;
             }
           }
-          flushLinks();
         }
         for (const rt of kgBaseRoutes.slice(0, 5)) {
           const lf = rt.lf ? ` · ${(rt.lf * 100).toFixed(0)}% LF` : '';
-          flashNER('DEMAND · FLOW', `${rt.o}→${rt.d} [${(rt.demand || 0).toLocaleString()} pax/wk${lf}]`);
-          await delay(240);
+          flashNER('DEMAND · FLOW', `${rt.o}→${rt.d} [${(rt.demand||0).toLocaleString()} pax/wk${lf}]`);
+          await delay(250);
         }
-        const demK = (totalWeeklyDemand / 1000).toFixed(0);
+        const dK = (totDmd / 1000).toFixed(0);
         if (counterEl) {
-          const a = _gNodes.filter(n => n.type === 'host' || n.type === 'competitor').length;
-          const p = _gNodes.filter(n => ['hub','reghub','station'].includes(n.type)).length;
-          const e = _gNodes.filter(n => n.type === 'equipment').length;
+          const a = nodes.filter(n=>n.type==='host'||n.type==='competitor').length;
+          const p = nodes.filter(n=>['hub','reghub','station'].includes(n.type)).length;
+          const e = nodes.filter(n=>n.type==='equipment').length;
           counterEl.innerHTML =
             `<span style="color:#818cf8">${a} airlines</span> &nbsp;·&nbsp; ` +
             `<span style="color:#22d3ee">${p} airports</span> &nbsp;·&nbsp; ` +
             `<span style="color:#f87171">${e} equip</span> &nbsp;·&nbsp; ` +
-            `<span style="color:#475569">${_gLinks.length} edges</span> &nbsp;·&nbsp; ` +
-            `<span style="color:#10b981">Σ${demK}K pax/wk</span>`;
+            `<span style="color:#475569">${links.length} edges</span> &nbsp;·&nbsp; ` +
+            `<span style="color:#10b981">Σ${dK}K pax/wk</span>`;
         }
         await delay(200);
       }
 
-      // ── Phase 6: Competitors ──
+      // ── Phase 6: Competitors ──────────────────────────────────────────────
       setPhase(`Detecting competitor airline entities… [${competitors.length}]`, 68);
       for (let i = 0; i < competitors.length; i++) {
-        addNodeTracked('competitor', competitors[i], competitors[i]);
-        if (i % 2 === 1) flushLinks();
-        flashNER(SCHEMA.competitor.nerTag, competitors[i]); updateCounters();
-        await delay(90);
+        addNode('competitor', competitors[i], competitors[i]);
+        if (i % 2 === 0) flushSim();
+        flashNER(SCHEMA.competitor.nerTag, competitors[i]);
+        updateCounters(); await delay(95);
       }
-      flushLinks();
+      flushSim();
 
-      // ── Phase 7: Alliances ──
+      // ── Phase 7: Alliances ────────────────────────────────────────────────
       const kgAlliances = kgViz.alliances || [];
       if (kgAlliances.length) {
         setPhase(`Detecting alliance groupings… [${kgAlliances.length} groups]`, 74);
         for (const aln of kgAlliances.slice(0, 10)) {
           const aName = aln.name.substring(0, 14);
-          addNodeTracked('alliance', aln.name, aName);
-          flushLinks();
+          addNode('alliance', aln.name, aName);
+          flushSim();
           flashNER(SCHEMA.alliance.nerTag, `${aName} (${aln.members.length} carriers)`);
           updateCounters(); await delay(160);
         }
       }
 
-      // ── Phase 7.5: Competitive airport presence (opp.dat) ──
+      // ── Phase 7.5: Competitive presence (opp.dat) ─────────────────────────
       const kgOppData = kgViz.opp_data || [];
       if (kgOppData.length) {
-        setPhase(`Mapping competitive airport presence… [${kgOppData.length} airline-airport pairs]`, 77);
-        let oppEdges = 0;
+        setPhase(`Mapping competitive airport presence… [${kgOppData.length} pairs]`, 77);
+        let added = 0;
         for (const opp of kgOppData) {
           if (nodeById.has(opp.aln) && nodeById.has(opp.arp)) {
-            _gLinks.push({ source: opp.aln, target: opp.arp, w: Math.max(0.2, opp.share * 1.8), color: '#f59e0b30' });
-            oppEdges++;
-            if (oppEdges % 30 === 0) {
-              flushLinks(); flashNER('OA · PRESENCE', `${opp.aln} @ ${opp.arp} [${(opp.share * 100).toFixed(0)}%]`);
+            links.push({ source:opp.aln, target:opp.arp, w: Math.max(0.2, opp.share*1.5), _color:'#f59e0b22' });
+            if (++added % 25 === 0) {
+              flushSim(); flashNER('OA · PRESENCE', `${opp.aln} @ ${opp.arp} [${(opp.share*100).toFixed(0)}%]`);
               await delay(40);
             }
           }
         }
-        flushLinks(); updateCounters();
-        await delay(300);
+        flushSim(); updateCounters(); await delay(300);
       }
 
-      // ── Phase 8: Equipment ──
-      const eqTypes = ['A320','A321','A319','737','A220','E175','CRJ9','787','777'];
+      // ── Phase 8: Equipment ────────────────────────────────────────────────
+      const eqTypes = ['A320','A321','A319','737-800','A220','E175','CRJ9','787','A350','777'];
       setPhase(`Cataloguing equipment types… [${eqTypes.length} entities]`, 80);
       for (const eq of eqTypes) {
-        addNodeTracked('equipment', eq, eq);
-        flushLinks();
-        flashNER(SCHEMA.equipment.nerTag, eq); updateCounters();
-        await delay(90);
+        addNode('equipment', eq, eq);
+        flushSim(); flashNER(SCHEMA.equipment.nerTag, eq);
+        updateCounters(); await delay(95);
       }
 
-      // ── Phase 8.5: Spill scan (SPILLDATA) ──
+      // ── Phase 8.5: Spill scan ─────────────────────────────────────────────
       const kgSpillMkts = kgViz.spill_markets || [];
-      const highSpillRoutes = kgSpillMkts.filter(m => (m.spill || 0) > 0).slice(0, 8);
-      if (highSpillRoutes.length) {
-        setPhase(`Scanning capacity constraints… [${highSpillRoutes.length} constrained markets]`, 85);
-        const spillLinkMap = new Map();
-        for (const l of _gLinks) {
-          const ls = typeof l.source === 'object' ? l.source.id : l.source;
-          const lt = typeof l.target === 'object' ? l.target.id : l.target;
-          spillLinkMap.set(ls + '→' + lt, l); spillLinkMap.set(lt + '→' + ls, l);
+      const highSpill   = kgSpillMkts.filter(m => (m.spill||0) > 0).slice(0, 10);
+      if (highSpill.length) {
+        setPhase(`Scanning capacity constraints… [${highSpill.length} constrained markets]`, 85);
+        const slMap = new Map();
+        for (const l of links) {
+          const ls = typeof l.source==='object' ? l.source.id : l.source;
+          const lt = typeof l.target==='object' ? l.target.id : l.target;
+          slMap.set(ls+'→'+lt, l); slMap.set(lt+'→'+ls, l);
         }
-        for (const mkt of highSpillRoutes) {
-          const l = spillLinkMap.get(mkt.o + '→' + mkt.d);
-          if (l) { l._high_spill = true; l._spill_pax = mkt.spill; }
-          flashNER('CAPACITY · CONSTRAINT', `${mkt.o}→${mkt.d} [${(mkt.spill || 0).toLocaleString()} spilled pax]`);
-          await delay(170);
+        for (const mkt of highSpill) {
+          const l = slMap.get(mkt.o+'→'+mkt.d);
+          if (l) { l._high_spill = true; l._phase = Math.random() * Math.PI * 2; }
+          flashNER('CAPACITY · CONSTRAINT', `${mkt.o}→${mkt.d} [${(mkt.spill||0).toLocaleString()} spilled]`);
+          await delay(175);
         }
-        // Re-apply particle animation on high-spill links
-        if (Graph) Graph.linkDirectionalParticles(l => (l._high_spill || (l._bb && l.w >= 1.5)) ? 2 : 0);
         await delay(300);
       }
 
-      // ── Phase 9: Resolve ──
+      // ── Phase 9: Resolve ──────────────────────────────────────────────────
       setPhase('Resolving knowledge graph topology…', 90);
-      await delay(900);
+      if (sim) sim.alphaTarget(0); // let sim cool naturally
+      await delay(1000);
 
       setPhase('Identifying analyst persona via NER…', 96);
       await delay(500);
 
       const persona = identifyPersona(summary, profile, kgViz);
-      const iconEl  = document.getElementById('kg-persona-icon');
-      const lblEl   = document.getElementById('kg-persona-label');
-      const reveal  = document.getElementById('kg-persona-reveal');
+      const iconEl = document.getElementById('kg-persona-icon');
+      const lblEl  = document.getElementById('kg-persona-label');
+      const reveal = document.getElementById('kg-persona-reveal');
       if (iconEl) iconEl.textContent = persona.icon;
       if (lblEl)  lblEl.textContent  = persona.label;
       if (reveal) { reveal.style.opacity = '1'; reveal.style.transform = 'translateY(0)'; }
@@ -8999,36 +9074,40 @@ document.addEventListener('DOMContentLoaded', () => {
 
       await delay(1800);
 
-      // Snapshot for Brain tab (project 3D → 2D)
-      window._kgBootNodes = _gNodes.map(n => ({
+      // Snapshot for Brain tab
+      _bootDone = true;
+      window._kgBootNodes = nodes.map(n => ({
         id: n.id, label: n.label, type: n.type || 'station',
-        color: n.color || '#3b82f6', r: Math.sqrt((n.val || 1)) * 2.5,
-        x: n.x || 0, y: n.y || 0,
+        color: (SCHEMA[n.type] || SCHEMA.station).color,
+        r: Math.max(2, (SCHEMA[n.type] || SCHEMA.station).r),
+        x: isFinite(n.x) ? n.x : W/2,
+        y: isFinite(n.y) ? n.y : H/2,
       }));
-      window._kgBootLinks = _gLinks.map(l => ({
-        source: typeof l.source === 'object' ? l.source.id : l.source,
-        target: typeof l.target === 'object' ? l.target.id : l.target,
+      window._kgBootLinks = links.map(l => ({
+        source: typeof l.source==='object' ? l.source.id : l.source,
+        target: typeof l.target==='object' ? l.target.id : l.target,
         w: l.w || 1,
       }));
 
       overlay.style.opacity = '0';
-      cancelAnimationFrame(_labelRaf); // stop label tracking
-      if (Graph) Graph.pauseAnimation();
-      await delay(950);
+      await delay(900);
+      stopLoop();
+      if (sim) sim.stop();
       overlay.style.display = 'none';
       window.dispatchEvent(new CustomEvent('kg-ready', { detail: persona }));
+
     } catch (err) {
       console.warn('KG loader error:', err);
-      cancelAnimationFrame(_labelRaf);
       overlay.style.transition = 'opacity 0.5s';
       overlay.style.opacity = '0';
-      setTimeout(() => { overlay.style.display = 'none'; }, 600);
+      setTimeout(() => { stopLoop(); overlay.style.display = 'none'; }, 600);
     }
   }
 
-  // Kick off after a short rAF so the overlay renders first
+  // Kick off after a short rAF so the overlay paints first
   requestAnimationFrame(() => setTimeout(run, 80));
 })();
+
 
 // ── Auto-select persona from KG analysis ─────────────────────────────────────
 window._brainStale = true; // always reload brain on first tab switch
