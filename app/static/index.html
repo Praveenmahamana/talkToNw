@@ -1192,6 +1192,11 @@
       font-size: 0.87rem; font-weight: 700; color: #fff;
       background: #C0553D; border-radius: 10px; padding: 2px 8px;
     }
+    .si-workset-badge {
+      font-size: 0.78rem; font-weight: 600; color: #fff;
+      background: #2065d1; border-radius: 10px; padding: 2px 8px;
+      letter-spacing: .03em;
+    }
     .si-tabs { display: flex; gap: 0; border: 1px solid #e4e2df; border-radius: 8px; overflow: hidden; position: absolute; left: 50%; transform: translateX(-50%); }
     .si-tab {
       padding: 6px 14px; font-size: 0.87rem; font-weight: 600; cursor: pointer;
@@ -1841,6 +1846,7 @@
     <div class="si-header-left">
       <span class="si-header-title"><img src="/static/icons/Sabre-Icon-Dashboard.svg" style="width:12px;height:12px;filter:brightness(0) opacity(0.5);vertical-align:middle;margin-right:5px;margin-bottom:2px" alt=""></span>
       <span class="si-host-badge" id="si-host-badge" style="display:none"></span>
+      <span class="si-workset-badge" id="si-workset-badge" style="display:none"></span>
     </div>
     <div class="si-tabs">
       
@@ -9193,6 +9199,10 @@ async function initSiPanel() {
         // Always pre-fill sim-airline with host airline
         const simAl = document.getElementById('sim-airline');
         if (simAl) simAl.value = p.host_airline.toUpperCase();
+      }
+      if (p.workset_id) {
+        const wsBadge = document.getElementById('si-workset-badge');
+        if (wsBadge) { wsBadge.textContent = `WS: ${p.workset_id}`; wsBadge.style.display = ''; }
       }
       // Populate workset context and rebuild personas + chips
       _wsCtx = {

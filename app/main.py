@@ -87,19 +87,19 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.debug(f"Re-init schedule name failed: {exc}")
 
-        # Build full KG stack: NetworkX → RDFLib → Kuzu → Analytics
+        # Build full KG stack fresh on every restart: NetworkX → RDFLib → Kuzu → Analytics
         try:
             from app.knowledge_graph.graph_construction import build_all
-            summary = build_all()
+            summary = build_all(force_rebuild=True)
             ok_layers = sum(1 for v in summary.values() if isinstance(v, dict) and v.get("ok"))
-            logger.info(f"KG construction complete — {ok_layers}/4 layers built.")
+            logger.info(f"KG construction complete — {ok_layers}/4 layers built (fresh rebuild).")
         except Exception as exc:
             logger.warning(f"Knowledge graph construction failed: {exc}")
 
-        # Load pre-built Workset KG (kg_light.json / kg.duckdb) — fast (~0.5s)
+        # Load pre-built Workset KG (kg_light.json / kg.duckdb) — fast (~0.5s), always fresh
         try:
             from app.knowledge_graph.workset_kg_loader import init_workset_kg
-            init_workset_kg()
+            init_workset_kg(force=True)
         except Exception as exc:
             logger.warning(f"Workset KG load failed: {exc}")
 
