@@ -1213,14 +1213,6 @@
     .si-od-filter button:hover { background: #8A3928; }
     .si-tab-content { display: none; }
     .si-tab-content.active { display: block; }
-    /* World View tab — full-viewport iframe overlay, below the tabs bar */
-    .si-tab-content.active#si-tab-world-view { display: block; }
-    #si-tab-world-view iframe {
-      position: fixed; top: var(--si-total-h, 122px); left: 0;
-      width: 100vw; height: calc(100vh - var(--si-total-h, 122px));
-      border: none; z-index: 90; display: none;
-    }
-    body.world-view-active #si-tab-world-view iframe { display: block; }
     /* Interactive Map tab — full-viewport iframe overlay */
     .si-tab-content.active#si-tab-interactive-map { display: block; }
     #si-tab-interactive-map iframe {
@@ -1846,8 +1838,7 @@
     <div class="si-tabs">
       
       <button class="si-tab" data-tab="chat" onclick="siSwitchTab('chat')"><img src="/static/icons/Sabre-Icon-Chat.svg" class="si-tab-icon" alt="">Chat</button>
-      <button class="si-tab" data-tab="world-view" onclick="siSwitchTab('world-view')"><img src="/static/icons/Sabre-Icon-Globe.svg" class="si-tab-icon" alt="">World View</button>
-      <button class="si-tab active" data-tab="network" onclick="siSwitchTab('network')"><img src="/static/icons/Sabre-Icon-Globe.svg" class="si-tab-icon" alt="">Network</button>
+      <button class="si-tab" data-tab="network" onclick="siSwitchTab('network')"><img src="/static/icons/Sabre-Icon-Globe.svg" class="si-tab-icon" alt="">Network</button>
       <button class="si-tab" data-tab="flight-view" onclick="siSwitchTab('flight-view')"><img src="/static/icons/Sabre-Icon-Plane.svg" class="si-tab-icon" alt="">Flight View</button>
       <button class="si-tab" data-tab="od-intel" onclick="siSwitchTab('od-intel')"><img src="/static/icons/Sabre-Icon-Pie-Chart.svg" class="si-tab-icon" alt="">O&amp;D Intelligence</button>
       <button class="si-tab" data-tab="simulate" onclick="siSwitchTab('simulate')"><img src="/static/icons/Sabre-Icon-Cogs.svg" class="si-tab-icon" alt="">Simulate</button>
@@ -1865,11 +1856,6 @@
   </div>
 
 
-
-  <!-- World View Tab -->
-  <div id="si-tab-world-view" class="si-tab-content">
-    <iframe id="world-view-iframe" src="about:blank" title="World View Globe" allowfullscreen></iframe>
-  </div>
 
   <!-- Interactive Map Tab -->
   <div id="si-tab-interactive-map" class="si-tab-content">
@@ -5259,7 +5245,6 @@ function _scrapeActiveTab() {
 
 // ── Dashboard tab labels for navigation guide ────────────────────────────────
 const _TAB_LABELS = {
-  'world-view':      'World View',
   'network':         'Network',
   'flight-view':     'Flight View',
   'od-intel':        'O&D Intelligence',
@@ -5278,7 +5263,6 @@ function _quickNavIntent(q) {
   if (/\b(simulate|simulation|sim\s*tab|add\s*flight|retime)\b/.test(t))         return 'simulate';
   if (/\b(brain|knowledge\s*graph|kg\s*(view|tab)|entity\s*graph)\b/.test(t))    return 'brain';
   if (/\b(compare\s*tab|comparison|compare\s*schedules?)\b/.test(t))             return 'compare';
-  if (/\b(world\s*view|global\s*map|global\s*view)\b/.test(t))                   return 'world-view';
   if (/\b(network\s*tab|show.*network|network\s*view)\b/.test(t))                return 'network';
   return null;
 }
@@ -7536,39 +7520,6 @@ function _detectRouteFromContext() {
   return null;
 }
 
-/**
- * Send a globe-filter postMessage to the World View iframe.
- * Uses the extracted IATA codes and route context from the AI response.
- * Silently skips if the iframe isn't loaded yet.
- */
-function _syncGlobeFilter(userQuery, answerText, codes, routeCtx) {
-  if (!codes || codes.length === 0) return;
-
-  // Build a human-readable label
-  let label = '';
-  if (routeCtx && routeCtx.origin && routeCtx.dest) {
-    label = `${routeCtx.origin} → ${routeCtx.dest}`;
-  } else {
-    const odMatch = userQuery.match(/\b([A-Z]{3})\s*(?:to|->|→|-)\s*([A-Z]{3})\b/i);
-    if (odMatch) {
-      label = `${odMatch[1].toUpperCase()} → ${odMatch[2].toUpperCase()}`;
-    } else {
-      label = codes.slice(0, 4).join(' · ');
-    }
-  }
-
-  const msg = { type: 'globe-filter', airports: codes, label };
-
-  // Always persist so switching to World View tab picks it up
-  window._pendingGlobeFilter = msg;
-
-  // Also send immediately if the iframe is already loaded
-  const iframe = document.getElementById('world-view-iframe');
-  if (iframe && iframe.src && iframe.src.includes('world-view')) {
-    try { iframe.contentWindow.postMessage(msg, '*'); } catch (_) {}
-  }
-}
-
 async function updateSimOpportunities(origin, dest) {
   if (!origin || !dest) return;
   origin = origin.toUpperCase(); dest = dest.toUpperCase();
@@ -8375,42 +8326,12 @@ function siSwitchTab(tab) {
   });
   // Show OD filter only for data tabs
   const odFilter = document.getElementById('si-od-filter');
-  const noFilter = ['chat','world-view','interactive-map','simulate','brain','compare','agents'];
+  const noFilter = ['chat','interactive-map','simulate','brain','compare','agents'];
   if (odFilter) odFilter.style.display = noFilter.includes(tab) ? 'none' : '';
   // Analysis panel workspace is only relevant in the Network tab
   const ws = document.querySelector('.workspace');
   if (ws) ws.style.display = (tab === 'network') ? 'flex' : 'none';
   _qGlowOff();
-  // Lazy-load world-view iframe on first activation; toggle full-viewport overlay
-  if (tab === 'world-view') {
-    const iframe = document.getElementById('world-view-iframe');
-    const wvUrl = '/static/world-view.html?v=3';
-    const isFirstLoad = iframe && !iframe.src.includes('world-view');
-    if (isFirstLoad) {
-      iframe.src = wvUrl;
-      // Once loaded, send any pending filter
-      iframe.onload = () => {
-        if (window._pendingGlobeFilter) {
-          setTimeout(() => {
-            try { iframe.contentWindow.postMessage(window._pendingGlobeFilter, '*'); } catch(_) {}
-          }, 400);
-        }
-      };
-    } else if (iframe && window._pendingGlobeFilter) {
-      // Iframe already loaded — send filter immediately
-      setTimeout(() => {
-        try { iframe.contentWindow.postMessage(window._pendingGlobeFilter, '*'); } catch(_) {}
-      }, 100);
-    }
-    // Position iframe below the si-header (tabs bar) so tabs remain visible
-    const hdr = document.querySelector('#si-panel .si-header');
-    const topPx = hdr ? Math.round(hdr.getBoundingClientRect().bottom) : 48;
-    iframe.style.top = topPx + 'px';
-    iframe.style.height = (window.innerHeight - topPx) + 'px';
-    document.body.classList.add('world-view-active');
-  } else {
-    document.body.classList.remove('world-view-active');
-  }
   // Interactive Map tab — lazy-load viz iframe
   if (tab === 'interactive-map') {
     const imIframe = document.getElementById('interactive-map-iframe');
