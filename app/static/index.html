@@ -1541,7 +1541,7 @@
     #si-tab-flight-view .fv-map-wrap {
       flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 280px;
     }
-    #si-flow-od-map { flex: 1; width: 100%; background: #f0f4f8; min-height: 220px; }
+    #si-flow-od-map { flex: 1; width: 100%; background: transparent; min-height: 220px; }
     #si-flow-od-kpis { display: flex; gap: 0; align-items: center; flex-wrap: wrap; }
     /* O&D Intelligence tab layout */
     #si-tab-od-intel.active {
@@ -1549,7 +1549,7 @@
       height: calc(100vh - var(--si-total-h, 122px)); overflow: hidden;
     }
     #si-tab-od-intel .si-two-panel { flex: 1; overflow: hidden; }
-    #si-itin-map { flex: 1; width: 100%; background: #f0f4f8; min-height: 160px; }
+    #si-itin-map { flex: 1; width: 100%; background: transparent; min-height: 160px; }
     /* Selected row in market summary */
     .si-selected-row td { background: rgba(34,33,32,0.07) !important; border-left: 3px solid #222120; }
     /* Host badge inline */
@@ -1941,7 +1941,7 @@
               <span style="color:#C0553D">━</span> Connecting
             </span>
           </div>
-          <div id="si-itin-map" style="flex:1;width:100%;background:#f0f4f8;min-height:160px">
+          <div id="si-itin-map" style="flex:1;width:100%;background:transparent;min-height:160px">
             <div class="si-empty" style="padding-top:30px">← Load an O&amp;D to visualise routing paths</div>
           </div>
         </div>
@@ -8695,11 +8695,11 @@ async function _siLoadFlightFlowOD(row) {
 
     // ── Build ECharts geo map ────────────────────────────────────────────────
     if (_flowOdMapChart) { try { _flowOdMapChart.dispose(); } catch(e){} }
-    _flowOdMapChart = echarts.init(mapEl, null, { renderer: 'canvas' });
+    _flowOdMapChart = echarts.init(mapEl, null, { renderer: 'svg' });
 
     const maxTrf = Math.max(...rows.map(r => parseFloat(r.total_traffic||0)), 1);
 
-    // Collect all unique airports and aggregate traffic (local vs flow split)
+    // Per-airport flow contribution tracking
     const airportTrf = {}, airportLocalTrf = {}, airportFlowTrf = {};
     rows.forEach(r => {
       const trf    = parseFloat(r.total_traffic||0);
@@ -8776,8 +8776,14 @@ async function _siLoadFlightFlowOD(row) {
       (isLcl ? localLines : flowLines).push(entry);
     });
 
+    // Auto-zoom to all airports with known coordinates
+    const allCoords = Object.keys(airportTrf)
+      .filter(c => AIRPORT_COORDS[c])
+      .map(c => { const [lat, lon] = AIRPORT_COORDS[c]; return [lon, lat]; });
+    const { center: geoCenter, zoom: geoZoom } = _calcGeoView(allCoords);
+
     _flowOdMapChart.setOption({
-      backgroundColor: '#f0f4f8',
+      backgroundColor: 'transparent',
       tooltip: {
         trigger: 'item',
         formatter: p => {
@@ -8794,10 +8800,11 @@ async function _siLoadFlightFlowOD(row) {
       geo: {
         map: 'world',
         roam: true,
-        zoom: 1.2,
+        center: geoCenter,
+        zoom: geoZoom,
         silent: true,
-        itemStyle: { areaColor: '#dce9f5', borderColor: '#b0c4d8', borderWidth: 0.5 },
-        emphasis: { itemStyle: { areaColor: '#dce9f5' } },
+        itemStyle: { areaColor: 'transparent', borderColor: '#94a3b8', borderWidth: 0.7 },
+        emphasis: { itemStyle: { areaColor: 'transparent' } },
       },
       series: [
         // Operated leg — amber, prominent
@@ -8857,6 +8864,29 @@ function _ensureWorldMap() {
     .then(geo => { echarts.registerMap('world', geo); return true; })
     .catch(() => false);
   return _worldMapReady;
+}
+
+// ── Shared geo viewport helper ──────────────────────────────────────────────
+// Given [[lon,lat], ...] returns { center:[lon,lat], zoom } that fits all points
+// with comfortable padding. Switches to SVG renderer for smooth vector borders.
+function _calcGeoView(lonLatList) {
+  if (!lonLatList.length) return { center: [0, 20], zoom: 1.5 };
+  const lons = lonLatList.map(c => c[0]);
+  const lats = lonLatList.map(c => c[1]);
+  const minLon = Math.min(...lons), maxLon = Math.max(...lons);
+  const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+  const center = [(minLon + maxLon) / 2, (minLat + maxLat) / 2];
+  const lonSpan = Math.max(maxLon - minLon, 4);
+  const latSpan = Math.max(maxLat - minLat, 4);
+  // Padding: 50% of span + 12° minimum so airports aren't at the edge
+  const padLon = lonSpan * 0.5 + 12;
+  const padLat = latSpan * 0.5 + 8;
+  const zoom = Math.min(
+    300 / (lonSpan + padLon),
+    160 / (latSpan + padLat),
+    14
+  );
+  return { center, zoom: Math.max(1.3, zoom) };
 }
 
 // ── Gantt OD Panel: donut chart (Local vs Flow split) ─────────────────────
@@ -9105,7 +9135,7 @@ async function _siRenderItinMap(rows) {
   }
 
   if (_itinMapChart) { try { _itinMapChart.dispose(); } catch(e){} }
-  _itinMapChart = echarts.init(mapEl, null, { renderer: 'canvas' });
+  _itinMapChart = echarts.init(mapEl, null, { renderer: 'svg' });
 
   // Aggregate unique route SEGMENTS (airport-pair arcs) and airport nodes
   const segMap   = {};   // "A-B" → { from, to, demand, traffic, isNonstop }
@@ -9182,8 +9212,13 @@ async function _siRenderItinMap(rows) {
   const odNodes = scatterData.filter(d => d.isOD);
   const cpNodes = scatterData.filter(d => d.isCP);
 
+  const odAllCoords = Object.keys(airports)
+    .filter(c => AIRPORT_COORDS[c])
+    .map(c => { const [lat, lon] = AIRPORT_COORDS[c]; return [lon, lat]; });
+  const { center: odCenter, zoom: odZoom } = _calcGeoView(odAllCoords);
+
   _itinMapChart.setOption({
-    backgroundColor: '#f0f4f8',
+    backgroundColor: 'transparent',
     tooltip: {
       trigger: 'item',
       formatter: p => p.seriesType === 'effectScatter' || p.seriesType === 'scatter'
@@ -9191,9 +9226,9 @@ async function _siRenderItinMap(rows) {
         : (p.name || ''),
     },
     geo: {
-      map: 'world', roam: true, zoom: 1.1, silent: true,
-      itemStyle: { areaColor: '#dce9f5', borderColor: '#b0c4d8', borderWidth: 0.4 },
-      emphasis: { itemStyle: { areaColor: '#dce9f5' } },
+      map: 'world', roam: true, center: odCenter, zoom: odZoom, silent: true,
+      itemStyle: { areaColor: 'transparent', borderColor: '#94a3b8', borderWidth: 0.7 },
+      emphasis: { itemStyle: { areaColor: 'transparent' } },
     },
     series: [
       // Nonstop arcs — green
