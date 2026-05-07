@@ -1013,7 +1013,7 @@
 
     /* ── Workspace Layout (Chat + Brain side-by-side) ── */
     .workspace {
-      display: flex; gap: 20px; align-items: flex-start; margin-bottom: 20px;
+      display: none; gap: 20px; align-items: flex-start; margin-bottom: 20px;
     }
     .chat-col { flex: 1; min-width: 0; }
     .brain-toggle-btn {
@@ -8376,6 +8376,9 @@ function siSwitchTab(tab) {
   const odFilter = document.getElementById('si-od-filter');
   const noFilter = ['chat','world-view','interactive-map','simulate','brain','compare','agents'];
   if (odFilter) odFilter.style.display = noFilter.includes(tab) ? 'none' : '';
+  // Analysis panel workspace is only relevant in the Network tab
+  const ws = document.querySelector('.workspace');
+  if (ws) ws.style.display = (tab === 'network') ? 'flex' : 'none';
   _qGlowOff();
   // Lazy-load world-view iframe on first activation; toggle full-viewport overlay
   if (tab === 'world-view') {
