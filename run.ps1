@@ -49,9 +49,9 @@ $env:SCHEDAI_DATA_FOLDER = if ($DataFolder) { $DataFolder } else { $env:SCHEDAI_
 # ── 5. Kill any existing process on the same port ────────────────────────────
 $existing = netstat -ano | Select-String ":$Port\s" | Select-String "LISTENING"
 if ($existing) {
-    $pid = ($existing -split "\s+")[-1]
-    Write-Host "Port $Port in use by PID $pid — stopping it …" -ForegroundColor Yellow
-    Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
+    $existingPid = ($existing -split "\s+")[-1]
+    Write-Host "Port $Port in use by PID $existingPid — stopping it …" -ForegroundColor Yellow
+    Stop-Process -Id $existingPid -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
 }
 

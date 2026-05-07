@@ -59,39 +59,76 @@ def _create_schema(conn: Any) -> None:
     """Create node and relationship tables."""
     conn.execute("""
         CREATE NODE TABLE Airport(
-            code         STRING,
-            city         STRING,
-            country      STRING,
-            utc_offset   STRING,
-            hub_tier     STRING,
-            hub_score    DOUBLE,
-            dest_count   INT64,
-            airline_count INT64,
-            out_freq     INT64,
+            code           STRING,
+            city           STRING,
+            country        STRING,
+            utc_offset     STRING,
+            hub_tier       STRING,
+            hub_score      DOUBLE,
+            dest_count     INT64,
+            airline_count  INT64,
+            out_freq       INT64,
+            strategic_role STRING,
+            description    STRING,
             PRIMARY KEY(code)
         )
     """)
     conn.execute("""
         CREATE NODE TABLE Airline(
+            code             STRING,
+            name             STRING,
+            carrier_type     STRING,
+            carrier_subtype  STRING,
+            alliance         STRING,
+            description      STRING,
+            PRIMARY KEY(code)
+        )
+    """)
+    conn.execute("""
+        CREATE NODE TABLE Alliance(
+            name  STRING,
+            PRIMARY KEY(name)
+        )
+    """)
+    conn.execute("""
+        CREATE NODE TABLE AircraftType(
             code         STRING,
-            name         STRING,
-            carrier_type STRING,
-            alliance     STRING,
+            total_routes INT64,
+            total_freq   INT64,
+            operators    INT64,
             PRIMARY KEY(code)
         )
     """)
     conn.execute("""
         CREATE REL TABLE Route(
             FROM Airport TO Airport,
-            airline_code    STRING,
-            weekly_flights  INT64,
-            avg_block_min   INT64,
-            aircraft_types  STRING
+            airline_code       STRING,
+            weekly_flights     INT64,
+            avg_block_min      INT64,
+            aircraft_types     STRING,
+            is_codeshare       BOOLEAN,
+            operating_airline  STRING,
+            marketing_airline  STRING
         )
     """)
     conn.execute("""
         CREATE REL TABLE Operates(
             FROM Airline TO Airport
+        )
+    """)
+    conn.execute("""
+        CREATE REL TABLE MemberOf(
+            FROM Airline TO Alliance
+        )
+    """)
+    conn.execute("""
+        CREATE REL TABLE UsesAircraft(
+            FROM Airline TO AircraftType
+        )
+    """)
+    conn.execute("""
+        CREATE REL TABLE CodeshareRelation(
+            FROM Airline TO Airline
         )
     """)
 
@@ -101,7 +138,7 @@ def _create_schema(conn: Any) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _load_data(conn: Any) -> None:
-    """Populate Kuzu from the NetworkX graph using pandas DataFrames."""
+    """Populate Kuzu from the NetworkX graph and entity taxonomy."""
     import pandas as pd
     from app.knowledge_graph.graph_builder import get_graph
     from app.services.workset_service import AIRPORT_INFO, AIRLINE_NAMES, CARRIER_TYPE
@@ -111,10 +148,24 @@ def _load_data(conn: Any) -> None:
     if G is None:
         raise RuntimeError("NetworkX graph not ready — cannot load Kuzu.")
 
+    # ── Fetch entity taxonomy (LM-enriched carrier + aircraft data) ───────────
+    taxonomy: dict = {}
+    try:
+        from app.knowledge_graph.entity_enrichment import build_entity_taxonomy
+        taxonomy = build_entity_taxonomy(G)
+    except Exception as exc:
+        logger.warning(f"Kuzu: entity taxonomy unavailable ({exc}) — loading base data only.")
+
+    lm_carriers       = taxonomy.get("lm_enrichment", {}).get("carriers", {})
+    lm_airports_map   = taxonomy.get("airport_enrichment", {}).get("airports", {})
+    taxonomy_aircraft = taxonomy.get("aircraft_nodes", [])
+    taxonomy_ac_edges = taxonomy.get("aircraft_edges", [])
+
     # ── Airport nodes ─────────────────────────────────────────────────────────
     ap_rows = []
     for ap, data in G.nodes(data=True):
-        info = AIRPORT_INFO.get(ap, {})
+        info     = AIRPORT_INFO.get(ap, {})
+        lm_ap    = lm_airports_map.get(ap, {})
         ap_rows.append({
             "code":          ap,
             "city":          info.get("city", ap),
@@ -125,6 +176,9 @@ def _load_data(conn: Any) -> None:
             "dest_count":    int(data.get("dest_count", 0)),
             "airline_count": int(data.get("airline_count", 0)),
             "out_freq":      int(data.get("out_freq", 0)),
+            # LM-enriched fields (empty string if not enriched)
+            "strategic_role": data.get("strategic_role", lm_ap.get("strategic_role", "")),
+            "description":    data.get("description",    lm_ap.get("description", "")),
         })
     ap_df = pd.DataFrame(ap_rows)
     conn.execute("COPY Airport FROM ap_df")
@@ -132,18 +186,48 @@ def _load_data(conn: Any) -> None:
 
     # ── Airline nodes ─────────────────────────────────────────────────────────
     airlines_seen = {d.get("airline") for _, _, d in G.edges(data=True) if d.get("airline")}
-    al_rows = [
-        {
-            "code":         al,
-            "name":         AIRLINE_NAMES.get(al, al),
-            "carrier_type": CARRIER_TYPE.get(al, "Full-service"),
-            "alliance":     ALLIANCE_MAP.get(al, ""),
-        }
-        for al in airlines_seen
-    ]
+    al_rows = []
+    for al in airlines_seen:
+        lm_info = lm_carriers.get(al, {})
+        al_rows.append({
+            "code":            al,
+            "name":            AIRLINE_NAMES.get(al, al),
+            "carrier_type":    CARRIER_TYPE.get(al, "Full-service"),
+            # LM-enriched fields
+            "carrier_subtype": lm_info.get("type", ""),
+            "alliance":        ALLIANCE_MAP.get(al, lm_info.get("alliance", "")),
+            "description":     lm_info.get("description", ""),
+        })
     al_df = pd.DataFrame(al_rows)
     conn.execute("COPY Airline FROM al_df")
     logger.debug(f"Kuzu: loaded {len(al_rows)} airlines")
+
+    # ── Alliance nodes ────────────────────────────────────────────────────────
+    all_alliances: set = set(ALLIANCE_MAP.values())
+    for info in lm_carriers.values():
+        aln = info.get("alliance", "")
+        if aln and aln not in ("None", ""):
+            all_alliances.add(aln)
+    aln_rows = [{"name": aln} for aln in sorted(all_alliances) if aln]
+    if aln_rows:
+        aln_df = pd.DataFrame(aln_rows)
+        conn.execute("COPY Alliance FROM aln_df")
+        logger.debug(f"Kuzu: loaded {len(aln_rows)} alliances")
+
+    # ── AircraftType nodes ────────────────────────────────────────────────────
+    if taxonomy_aircraft:
+        ac_rows = [
+            {
+                "code":         n["label"],
+                "total_routes": int(n.get("routes", 0)),
+                "total_freq":   int(n.get("total_freq", 0)),
+                "operators":    int(n.get("operators", 0)),
+            }
+            for n in taxonomy_aircraft
+        ]
+        ac_df = pd.DataFrame(ac_rows)
+        conn.execute("COPY AircraftType FROM ac_df")
+        logger.debug(f"Kuzu: loaded {len(ac_rows)} aircraft types")
 
     # ── Route edges ───────────────────────────────────────────────────────────
     rt_rows = []
@@ -152,12 +236,15 @@ def _load_data(conn: Any) -> None:
         if not al:
             continue
         rt_rows.append({
-            "from":           origin,
-            "to":             dest,
-            "airline_code":   al,
-            "weekly_flights": int(data.get("unique_flights", 0)),
-            "avg_block_min":  int(data.get("avg_block_min", 0)),
-            "aircraft_types": ",".join(data.get("aircraft_types", []) or []),
+            "from":              origin,
+            "to":                dest,
+            "airline_code":      al,
+            "weekly_flights":    int(data.get("unique_flights", 0)),
+            "avg_block_min":     int(data.get("avg_block_min", 0)),
+            "aircraft_types":    ",".join(data.get("aircraft_types", []) or []),
+            "is_codeshare":      bool(data.get("is_codeshare", False)),
+            "operating_airline": str(data.get("operating_airline", al)),
+            "marketing_airline": str(data.get("marketing_airline", al)),
         })
     rt_df = pd.DataFrame(rt_rows)
     conn.execute("COPY Route FROM rt_df")
@@ -182,6 +269,50 @@ def _load_data(conn: Any) -> None:
     ops_df = pd.DataFrame(ops_rows)
     conn.execute("COPY Operates FROM ops_df")
     logger.debug(f"Kuzu: loaded {len(ops_rows)} operates edges")
+
+    # ── MemberOf edges (airline → alliance) ──────────────────────────────────
+    alliance_names_set = {r["name"] for r in aln_rows} if aln_rows else set()
+    member_rows = []
+    for al in airlines_seen:
+        aln = ALLIANCE_MAP.get(al) or lm_carriers.get(al, {}).get("alliance", "")
+        if aln and aln not in ("None", "") and aln in alliance_names_set:
+            member_rows.append({"from": al, "to": aln})
+    if member_rows:
+        member_df = pd.DataFrame(member_rows)
+        conn.execute("COPY MemberOf FROM member_df")
+        logger.debug(f"Kuzu: loaded {len(member_rows)} member_of edges")
+
+    # ── UsesAircraft edges (airline → aircraft type) ──────────────────────────
+    if taxonomy_aircraft and taxonomy_ac_edges:
+        ac_codes_set = {n["label"] for n in taxonomy_aircraft}
+        ua_rows = []
+        seen_pairs: set = set()
+        for e in taxonomy_ac_edges:
+            al = e["source"].removeprefix("C_")
+            ac = e["target"].removeprefix("AC_")
+            pair = (al, ac)
+            if al in airlines_seen and ac in ac_codes_set and pair not in seen_pairs:
+                ua_rows.append({"from": al, "to": ac})
+                seen_pairs.add(pair)
+        if ua_rows:
+            ua_df = pd.DataFrame(ua_rows)
+            conn.execute("COPY UsesAircraft FROM ua_df")
+            logger.debug(f"Kuzu: loaded {len(ua_rows)} uses_aircraft edges")
+
+    # ── CodeshareRelation edges (marketing airline → operating airline) ────────
+    codeshare_pairs = G.graph.get("codeshare_pairs", [])
+    airlines_in_kuzu = {row["code"] for row in al_rows}
+    cs_rows = []
+    seen_cs: set = set()
+    for mkt_al, op_al in codeshare_pairs:
+        pair = (mkt_al, op_al)
+        if mkt_al in airlines_in_kuzu and op_al in airlines_in_kuzu and pair not in seen_cs:
+            cs_rows.append({"from": mkt_al, "to": op_al})
+            seen_cs.add(pair)
+    if cs_rows:
+        cs_df = pd.DataFrame(cs_rows)
+        conn.execute("COPY CodeshareRelation FROM cs_df")
+        logger.debug(f"Kuzu: loaded {len(cs_rows)} codeshare_relation edges")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -346,4 +477,60 @@ def find_routes_between_hubs(hub1: str, hub2: str) -> List[Dict[str, Any]]:
         MATCH (a:Airport {{code: '{hub2}'}})-[r:Route]->(b:Airport {{code: '{hub1}'}})
         RETURN r.airline_code AS airline, r.weekly_flights AS weekly, r.avg_block_min AS block_min
         ORDER BY weekly DESC
+    """)
+
+
+def find_airlines_in_alliance(alliance: str) -> List[Dict[str, Any]]:
+    """Return all airlines that are members of a given alliance."""
+    return cypher_query(f"""
+        MATCH (al:Airline)-[:MemberOf]->(aln:Alliance {{name: '{alliance}'}})
+        RETURN al.code AS airline, al.name AS name,
+               al.carrier_type AS carrier_type, al.carrier_subtype AS subtype
+        ORDER BY al.name
+    """)
+
+
+def find_aircraft_operators(aircraft_type: str) -> List[Dict[str, Any]]:
+    """Return all airlines that operate a given aircraft type."""
+    return cypher_query(f"""
+        MATCH (al:Airline)-[:UsesAircraft]->(ac:AircraftType {{code: '{aircraft_type}'}})
+        RETURN al.code AS airline, al.name AS name, al.carrier_type AS carrier_type
+        ORDER BY al.name
+    """)
+
+
+def find_gateway_airports() -> List[Dict[str, Any]]:
+    """Return airports classified as Gateway or Hub by LLM enrichment."""
+    return cypher_query("""
+        MATCH (a:Airport)
+        WHERE a.strategic_role IN ['Gateway', 'Hub']
+        RETURN a.code AS airport, a.city AS city, a.country AS country,
+               a.strategic_role AS role, a.description AS description,
+               a.hub_tier AS tier, a.hub_score AS score
+        ORDER BY a.hub_score DESC
+        LIMIT 30
+    """)
+
+
+def find_codeshare_partners(airline: str) -> List[Dict[str, Any]]:
+    """Return airlines that have a codeshare relationship with the given airline."""
+    return cypher_query(f"""
+        MATCH (al:Airline {{code: '{airline}'}})-[:CodeshareRelation]->(partner:Airline)
+        RETURN partner.code AS partner_code, partner.name AS partner_name,
+               partner.carrier_type AS carrier_type, partner.alliance AS alliance
+        ORDER BY partner.name
+    """)
+
+
+def find_codeshare_routes(airline: str) -> List[Dict[str, Any]]:
+    """Return all codeshare routes where this airline is marketing or operating carrier."""
+    return cypher_query(f"""
+        MATCH (o:Airport)-[r:Route]->(d:Airport)
+        WHERE r.is_codeshare = true
+          AND (r.marketing_airline = '{airline}' OR r.operating_airline = '{airline}')
+        RETURN o.code AS origin, d.code AS dest,
+               r.marketing_airline AS marketing, r.operating_airline AS operating,
+               r.weekly_flights AS weekly_flights
+        ORDER BY o.code, d.code
+        LIMIT 50
     """)

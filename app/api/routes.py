@@ -4,7 +4,13 @@ FastAPI route definitions for the Airline Schedule Intelligence API.
 
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, HTTPException, Depends
+import asyncio
+import json
+import math
+from pathlib import Path
+from fastapi import APIRouter, HTTPException, Depends, Request
+from pydantic import BaseModel
+from fastapi.responses import StreamingResponse
 from loguru import logger
 
 from app.api.schemas import (
@@ -36,7 +42,6 @@ _agent   = ScheduleAgent()
 
 
 def _parse_dt(s: str) -> Optional[datetime]:
-    """Parse ISO-format datetime string."""
     if not s:
         return None
     for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"]:
@@ -70,6 +75,7 @@ def _df_to_json(df) -> List[Dict]:
     return result
 
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Health
 # ─────────────────────────────────────────────────────────────────────────────
@@ -95,6 +101,52 @@ async def schedule_summary():
     """Return aggregate statistics about the loaded schedule (used by dashboard)."""
     from app.database.queries import get_summary_stats
     return get_summary_stats()
+
+
+@router.get("/kg-build/stream", tags=["System"])
+async def kg_build_stream(request: Request):
+    """
+    Server-Sent Events stream of the workset KG build progress.
+    Each event includes the current progress snapshot plus (when available) one
+    visualization chunk — a batch of airport nodes or FLOW_THROUGH edge records
+    for the splash canvas to render live as the KG builds.
+    Terminates after all chunks are drained and phase is 'done' or 'error'.
+    """
+    async def _generator():
+        from app.knowledge_graph import workset_graph_builder as _wgb
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                p = _wgb.get_build_progress()
+                # Drain ONE chunk per SSE event (creates a natural 500 ms render cadence)
+                chunk = _wgb.pop_viz_chunk()
+                if chunk is not None:
+                    p["viz_chunk"] = chunk
+                yield f"data: {json.dumps(p)}\n\n"
+                if p["phase"] in ("done", "error"):
+                    # Keep streaming until the viz chunk queue is fully drained
+                    leftover = _wgb.pop_viz_chunk()
+                    while leftover is not None:
+                        fp = _wgb.get_build_progress()
+                        fp["viz_chunk"] = leftover
+                        yield f"data: {json.dumps(fp)}\n\n"
+                        await asyncio.sleep(0.4)
+                        leftover = _wgb.pop_viz_chunk()
+                    break
+                await asyncio.sleep(0.5)
+        except asyncio.CancelledError:
+            pass
+
+    return StreamingResponse(
+        _generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @router.get("/kg-viz", tags=["System"])
@@ -384,25 +436,462 @@ async def kg_viz_data(top_airports: int = 80):
             except Exception as exc:
                 logger.warning(f"cnctDataIn.dat parse failed: {exc}")
 
+        # ── Spec-compliant Workset KG: MARKET nodes + FLOW_THROUGH edges ─────
+        # Built from BASEDATA + SPILLDATA via OD→Leg Contribution Matrix.
+        # When not yet ready, the splash screen falls back to spill_markets.
+        wkg_ready        = False
+        wkg_market_nodes: list = []
+        wkg_flow_edges:   list = []
+        try:
+            from app.knowledge_graph import workset_graph_builder as _wgb
+            wkg_ready = _wgb.is_ready()
+            if wkg_ready:
+                ms = _wgb.get_market_summary()
+                ge = _wgb.get_graph_edges()
+
+                if ms is not None and not ms.empty:
+                    sort_col = "total_traffic" if "total_traffic" in ms.columns else ms.columns[0]
+                    top_ms = ms.nlargest(200, sort_col).copy()
+                    # market_summary has market_od ("AAA->BBB") — split into origin/destin
+                    if "origin" not in top_ms.columns and "market_od" in top_ms.columns:
+                        od_split = top_ms["market_od"].str.split("->", expand=True)
+                        top_ms["origin"] = od_split[0]
+                        top_ms["destin"]  = od_split[1]
+                    wkg_market_nodes = [
+                        {
+                            "id":            f"{r['origin']}_{r['destin']}",
+                            "origin":        r["origin"],
+                            "destin":        r["destin"],
+                            "market_od":     r.get("market_od", f"{r['origin']}->{r['destin']}"),
+                            "total_traffic": _clean(r.get("total_traffic", 0)),
+                            "total_demand":  _clean(r.get("total_demand",  0)),
+                            "total_spill":   _clean(r.get("total_spill",   0)),
+                        }
+                        for _, r in top_ms.iterrows()
+                        if str(r.get("origin", "")) in iata_set and str(r.get("destin", "")) in iata_set
+                    ]
+
+                if ge is not None and not ge.empty:
+                    flow_only = ge[ge["edge_type"].isin(["FLOW_THROUGH", "MARKET_FLOW"])]
+                    if not flow_only.empty:
+                        agg = (
+                            flow_only.groupby(["source", "target", "edge_type"])["traffic"]
+                            .sum()
+                            .reset_index()
+                        )
+                        wkg_flow_edges = [
+                            {
+                                "source":    r["source"],
+                                "target":    r["target"],
+                                "edge_type": r["edge_type"],
+                                "traffic":   _clean(r["traffic"]),
+                            }
+                            for _, r in agg.iterrows()
+                            if r["source"] in iata_set and r["target"] in iata_set
+                        ]
+            if wkg_ready:
+                logger.info(
+                    f"kg-viz: SPEC-COMPLIANT workset KG loaded — "
+                    f"{len(wkg_market_nodes)} MARKET nodes, "
+                    f"{len(wkg_flow_edges)} FLOW_THROUGH/MARKET_FLOW edges "
+                    f"(OD→Leg Contribution Matrix, BASEDATA+SPILLDATA)"
+                )
+            else:
+                logger.info("kg-viz: workset KG not yet ready — splash will fall back to spill_markets/cnctDataIn")
+        except Exception as exc:
+            logger.info(f"kg-viz workset KG overlay skipped: {exc}")
+
+        stats["wkg_ready"]       = wkg_ready
+        stats["wkg_markets"]     = len(wkg_market_nodes)
+        stats["wkg_flow_edges"]  = len(wkg_flow_edges)
+
         return {
-            "airports":        airports,
-            "routes":          routes,
-            "airlines":        airlines,
-            "alliances":       alliances,
-            "markets":         markets,
-            "base_airports":   base_airports,
-            "base_routes":     base_routes,
-            "spill_markets":   spill_markets,
-            "spill_airlines":  spill_airlines,
-            "opp_data":        opp_data,
-            "airport_regions": airport_regions,
-            "cnct_markets":    cnct_markets,
-            "stats":           stats,
+            "airports":           airports,
+            "routes":             routes,
+            "airlines":           airlines,
+            "alliances":          alliances,
+            "markets":            markets,
+            "base_airports":      base_airports,
+            "base_routes":        base_routes,
+            "spill_markets":      spill_markets,
+            "spill_airlines":     spill_airlines,
+            "opp_data":           opp_data,
+            "airport_regions":    airport_regions,
+            "cnct_markets":       cnct_markets,
+            "wkg_ready":          wkg_ready,
+            "wkg_market_nodes":   wkg_market_nodes,
+            "wkg_flow_edges":     wkg_flow_edges,
+            "stats":              stats,
         }
 
     except Exception as exc:
         logger.warning(f"kg-viz query failed: {exc}")
         return {"airports": [], "routes": [], "airlines": [], "stats": {}}
+
+
+@router.get("/kg-viz/stream", tags=["System"])
+async def kg_viz_stream(top_airports: int = 80):
+    """
+    Server-Sent Events version of kg-viz.  Yields data in progressive chunks so
+    the splash-screen canvas can start rendering airports immediately, without
+    waiting for the full 700 KB payload.
+
+    Chunks in order:
+      {type:'airports', data:[...]}
+      {type:'airlines', data:[...]}        ← triggers frontend phase 2
+      {type:'routes',   data:[...]}
+      {type:'workset',  data:{base_airports, base_routes, spill_markets, spill_airlines}}
+      {type:'metadata', data:{alliances, markets, opp_data, airport_regions, cnct_markets}}
+      {type:'wkg',      data:{wkg_market_nodes, wkg_flow_edges}}  (only if ready)
+      {type:'done',     stats:{...}}
+    """
+    async def _gen():
+        from app.database.db import fetchdf
+        import csv
+        import math
+        import os
+        from pathlib import Path
+
+        def _clean(val):
+            if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+                return 0
+            if hasattr(val, "item"):
+                return val.item()
+            return val
+
+        def _sse(obj: dict) -> str:
+            return f"data: {json.dumps(obj)}\n\n"
+
+        try:
+            # ── Chunk 1: airports + airlines (needed for phases 2–4) ──────────
+            ap_df = fetchdf(f"""
+                SELECT airport, COUNT(*) AS movements
+                FROM (
+                    SELECT origin      AS airport FROM flights
+                    UNION ALL
+                    SELECT destination AS airport FROM flights
+                ) t
+                GROUP BY airport
+                ORDER BY movements DESC
+                LIMIT {int(top_airports)}
+            """)
+            airports = [
+                {"iata": r["airport"], "movements": _clean(r["movements"])}
+                for _, r in ap_df.iterrows() if r["airport"]
+            ]
+            iata_set   = {a["iata"] for a in airports}
+            in_clause  = ", ".join(f"'{c}'" for c in iata_set)
+
+            al_df = fetchdf("""
+                SELECT airline, COUNT(*) AS flights
+                FROM flights
+                GROUP BY airline
+                ORDER BY flights DESC
+                LIMIT 30
+            """)
+            airlines = [
+                {"iata": r["airline"], "flights": _clean(r["flights"])}
+                for _, r in al_df.iterrows() if r["airline"]
+            ]
+
+            yield _sse({"type": "airports", "data": airports})
+            await asyncio.sleep(0)
+            yield _sse({"type": "airlines", "data": airlines})
+            await asyncio.sleep(0)
+
+            # ── Chunk 2: routes ───────────────────────────────────────────────
+            rt_df = fetchdf(f"""
+                SELECT origin, destination,
+                       COUNT(*)                AS flights,
+                       COUNT(DISTINCT airline) AS airlines
+                FROM flights
+                WHERE origin      IN ({in_clause})
+                  AND destination IN ({in_clause})
+                GROUP BY origin, destination
+                ORDER BY flights DESC
+            """)
+            routes = [
+                {"o": r["origin"], "d": r["destination"],
+                 "flights": _clean(r["flights"]), "airlines": _clean(r["airlines"])}
+                for _, r in rt_df.iterrows()
+            ]
+            yield _sse({"type": "routes", "data": routes})
+            await asyncio.sleep(0)
+
+            # ── Chunk 3: workset DuckDB queries ───────────────────────────────
+            base_airports, base_routes, spill_markets, spill_airlines = [], [], [], []
+            try:
+                ba_df = fetchdf(f"""
+                    SELECT origin AS airport,
+                           CAST(SUM(apm_dmd)   AS INTEGER) AS weekly_demand,
+                           CAST(SUM(apm_pax)   AS INTEGER) AS weekly_pax,
+                           CAST(SUM(apm_spill) AS INTEGER) AS weekly_spill,
+                           ROUND(AVG(CASE WHEN apm_cap > 0
+                                         THEN CAST(apm_pax AS FLOAT) / apm_cap
+                                         ELSE NULL END), 3) AS avg_lf
+                    FROM workset_base
+                    WHERE mkt_ind <= 1 AND origin IN ({in_clause})
+                    GROUP BY origin ORDER BY weekly_demand DESC
+                """)
+                base_airports = [
+                    {"iata": r["airport"], "demand": _clean(r["weekly_demand"]),
+                     "pax": _clean(r["weekly_pax"]), "spill": _clean(r["weekly_spill"]),
+                     "lf": _clean(r["avg_lf"])}
+                    for _, r in ba_df.iterrows() if r.get("airport")
+                ]
+            except Exception:
+                pass
+
+            try:
+                br_df = fetchdf(f"""
+                    SELECT origin, dest,
+                           CAST(SUM(apm_dmd)   AS INTEGER) AS weekly_demand,
+                           CAST(SUM(apm_pax)   AS INTEGER) AS weekly_pax,
+                           CAST(SUM(apm_spill) AS INTEGER) AS weekly_spill,
+                           ROUND(AVG(CASE WHEN apm_cap > 0
+                                         THEN CAST(apm_pax AS FLOAT) / apm_cap
+                                         ELSE NULL END), 3) AS avg_lf,
+                           COUNT(*) AS departures
+                    FROM workset_base
+                    WHERE mkt_ind <= 1 AND origin IN ({in_clause}) AND dest IN ({in_clause})
+                    GROUP BY origin, dest ORDER BY weekly_demand DESC
+                """)
+                base_routes = [
+                    {"o": r["origin"], "d": r["dest"],
+                     "demand": _clean(r["weekly_demand"]), "pax": _clean(r["weekly_pax"]),
+                     "spill": _clean(r["weekly_spill"]), "lf": _clean(r["avg_lf"]),
+                     "deps": _clean(r["departures"])}
+                    for _, r in br_df.iterrows()
+                ]
+            except Exception:
+                pass
+
+            try:
+                sm_df = fetchdf(f"""
+                    SELECT market_origin AS o, market_dest AS d,
+                           CAST(SUM(total_demand) AS INTEGER) AS total_demand,
+                           CAST(SUM(total_pax)    AS INTEGER) AS total_pax,
+                           CAST(SUM(total_spill)  AS INTEGER) AS total_spill,
+                           ROUND(AVG(mkt_share), 4) AS avg_share
+                    FROM workset_spill
+                    WHERE market_origin IN ({in_clause}) AND market_dest IN ({in_clause})
+                    GROUP BY market_origin, market_dest
+                    ORDER BY total_demand DESC LIMIT 200
+                """)
+                spill_markets = [
+                    {"o": r["o"], "d": r["d"],
+                     "demand": _clean(r["total_demand"]), "pax": _clean(r["total_pax"]),
+                     "spill": _clean(r["total_spill"]), "share": _clean(r["avg_share"])}
+                    for _, r in sm_df.iterrows()
+                ]
+            except Exception:
+                pass
+
+            try:
+                sa_df = fetchdf("""
+                    SELECT airline,
+                           COUNT(DISTINCT market_origin || '-' || market_dest) AS markets,
+                           CAST(SUM(total_demand) AS INTEGER) AS total_demand,
+                           CAST(SUM(total_pax)    AS INTEGER) AS total_pax,
+                           ROUND(AVG(mkt_share), 4) AS avg_share
+                    FROM workset_spill
+                    WHERE airline IS NOT NULL AND LENGTH(TRIM(airline)) > 0
+                    GROUP BY airline ORDER BY total_demand DESC LIMIT 30
+                """)
+                spill_airlines = [
+                    {"iata": r["airline"], "markets": _clean(r["markets"]),
+                     "demand": _clean(r["total_demand"]), "pax": _clean(r["total_pax"]),
+                     "share": _clean(r["avg_share"])}
+                    for _, r in sa_df.iterrows() if r.get("airline")
+                ]
+            except Exception:
+                pass
+
+            yield _sse({"type": "workset", "data": {
+                "base_airports": base_airports, "base_routes": base_routes,
+                "spill_markets": spill_markets, "spill_airlines": spill_airlines,
+            }})
+            await asyncio.sleep(0)
+
+            # ── Chunk 4: flat-file metadata ───────────────────────────────────
+            alliances, markets, opp_data, airport_regions, cnct_markets = [], [], {}, {}, []
+            _wd = None
+            try:
+                _data_folder = os.getenv("SCHEDAI_DATA_FOLDER", "")
+                _p = Path(_data_folder)
+                _wd = _p.parent if _p.name == "out" else _p
+            except Exception:
+                pass
+
+            if _wd:
+                try:
+                    aln_file = _wd / "data" / "alliance.dat"
+                    if aln_file.exists():
+                        aln_dict: dict = {}
+                        with open(aln_file, newline="", encoding="utf-8-sig") as f:
+                            for row in csv.DictReader(f):
+                                name = (row.get("ALLNCENM") or "").strip()
+                                code = (row.get("ALNCD") or "").strip()
+                                if name and code:
+                                    aln_dict.setdefault(name, []).append(code)
+                        alliances = sorted(
+                            [{"name": k, "members": v} for k, v in aln_dict.items() if len(v) >= 3],
+                            key=lambda x: -len(x["members"])
+                        )[:12]
+                except Exception as exc:
+                    logger.warning(f"kg-viz/stream alliance.dat: {exc}")
+
+                try:
+                    mkt_file = _wd / "data" / "mktSize.dat"
+                    if mkt_file.exists():
+                        mkt_rows: list = []
+                        with open(mkt_file, newline="", encoding="utf-8-sig") as f:
+                            for row in csv.DictReader(f):
+                                o = (row.get("ORG") or "").strip()
+                                d = (row.get("DEST") or "").strip()
+                                try:
+                                    dem = int(float(row.get("WKLYDMD", 0) or 0))
+                                except Exception:
+                                    dem = 0
+                                if o in iata_set and d in iata_set and dem > 0:
+                                    mkt_rows.append({"o": o, "d": d, "wkly_demand": dem})
+                        mkt_rows.sort(key=lambda x: -x["wkly_demand"])
+                        markets = mkt_rows[:150]
+                except Exception as exc:
+                    logger.warning(f"kg-viz/stream mktSize.dat: {exc}")
+
+                try:
+                    opp_file = _wd / "data" / "opp.dat"
+                    if opp_file.exists():
+                        all_al_set = {a["iata"] for a in airlines}
+                        opp_rows: list = []
+                        with open(opp_file, encoding="utf-8-sig") as f:
+                            for line in f:
+                                parts = line.strip().split()
+                                if len(parts) >= 3:
+                                    arp, aln = parts[0].strip(), parts[1].strip()
+                                    try:
+                                        share = float(parts[2])
+                                    except Exception:
+                                        continue
+                                    if arp in iata_set and aln in all_al_set and share > 0.05:
+                                        opp_rows.append({"arp": arp, "aln": aln, "share": round(share, 4)})
+                        opp_rows.sort(key=lambda x: -x["share"])
+                        opp_data = opp_rows
+                except Exception as exc:
+                    logger.warning(f"kg-viz/stream opp.dat: {exc}")
+
+                try:
+                    regn_file = _wd / "data" / "regnList.dat"
+                    if regn_file.exists():
+                        with open(regn_file, newline="", encoding="utf-8-sig") as f:
+                            for row in csv.DictReader(f):
+                                arp = (row.get("ARPCD") or "").strip()
+                                rgn = (row.get("REGNCD") or "").strip()
+                                if arp in iata_set and rgn:
+                                    airport_regions[arp] = rgn
+                except Exception as exc:
+                    logger.warning(f"kg-viz/stream regnList.dat: {exc}")
+
+                try:
+                    cnct_file = _wd / "data" / "cnctDataIn.dat"
+                    if cnct_file.exists():
+                        seen_cnct: set = set()
+                        with open(cnct_file, encoding="utf-8-sig") as f:
+                            for line in f:
+                                parts = line.strip().split(",")
+                                if len(parts) >= 2:
+                                    o, d = parts[0].strip(), parts[1].strip()
+                                    key = f"{o}:{d}"
+                                    if o in iata_set and d in iata_set and key not in seen_cnct:
+                                        seen_cnct.add(key)
+                                        cnct_markets.append({"o": o, "d": d})
+                except Exception as exc:
+                    logger.warning(f"kg-viz/stream cnctDataIn.dat: {exc}")
+
+            yield _sse({"type": "metadata", "data": {
+                "alliances": alliances, "markets": markets,
+                "opp_data": opp_data, "airport_regions": airport_regions,
+                "cnct_markets": cnct_markets,
+            }})
+            await asyncio.sleep(0)
+
+            # ── Chunk 5: workset KG (MARKET nodes + FLOW edges, if ready) ─────
+            wkg_ready = False
+            wkg_market_nodes: list = []
+            wkg_flow_edges:   list = []
+            try:
+                from app.knowledge_graph import workset_graph_builder as _wgb
+                wkg_ready = _wgb.is_ready()
+                if wkg_ready:
+                    ms = _wgb.get_market_summary()
+                    ge = _wgb.get_graph_edges()
+                    if ms is not None and not ms.empty:
+                        sort_col = "total_traffic" if "total_traffic" in ms.columns else ms.columns[0]
+                        top_ms = ms.nlargest(200, sort_col).copy()
+                        if "origin" not in top_ms.columns and "market_od" in top_ms.columns:
+                            od_split = top_ms["market_od"].str.split("->", expand=True)
+                            top_ms["origin"] = od_split[0]
+                            top_ms["destin"]  = od_split[1]
+                        wkg_market_nodes = [
+                            {"id": f"{r['origin']}_{r['destin']}",
+                             "origin": r["origin"], "destin": r["destin"],
+                             "market_od": r.get("market_od", f"{r['origin']}->{r['destin']}"),
+                             "total_traffic": _clean(r.get("total_traffic", 0)),
+                             "total_demand":  _clean(r.get("total_demand",  0)),
+                             "total_spill":   _clean(r.get("total_spill",   0))}
+                            for _, r in top_ms.iterrows()
+                            if str(r.get("origin", "")) in iata_set and str(r.get("destin", "")) in iata_set
+                        ]
+                    if ge is not None and not ge.empty:
+                        flow_only = ge[ge["edge_type"].isin(["FLOW_THROUGH", "MARKET_FLOW"])]
+                        if not flow_only.empty:
+                            agg = (
+                                flow_only.groupby(["source", "target", "edge_type"])["traffic"]
+                                .sum().reset_index()
+                            )
+                            wkg_flow_edges = [
+                                {"source": r["source"], "target": r["target"],
+                                 "edge_type": r["edge_type"], "traffic": _clean(r["traffic"])}
+                                for _, r in agg.iterrows()
+                                if r["source"] in iata_set and r["target"] in iata_set
+                            ]
+                    if wkg_ready:
+                        yield _sse({"type": "wkg", "data": {
+                            "wkg_market_nodes": wkg_market_nodes,
+                            "wkg_flow_edges":   wkg_flow_edges,
+                        }})
+                        await asyncio.sleep(0)
+            except Exception as exc:
+                logger.info(f"kg-viz/stream wkg skipped: {exc}")
+
+            # ── Final: done ───────────────────────────────────────────────────
+            stats = {
+                "total_airports":  len(airports),
+                "total_routes":    len(routes),
+                "total_airlines":  len(airlines),
+                "base_routes":     len(base_routes),
+                "spill_markets":   len(spill_markets),
+                "has_demand_data": len(base_routes) > 0,
+                "wkg_ready":       wkg_ready,
+                "wkg_markets":     len(wkg_market_nodes),
+                "wkg_flow_edges":  len(wkg_flow_edges),
+            }
+            yield _sse({"type": "done", "stats": stats})
+
+        except Exception as exc:
+            logger.warning(f"kg-viz/stream generator error: {exc}")
+            yield _sse({"type": "error", "message": str(exc)})
+
+    return StreamingResponse(
+        _gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -626,6 +1115,125 @@ async def chart_suggest(request: ChartSuggestRequest):
     except Exception as exc:
         logger.warning(f"chart-suggest error: {exc}")
         return ChartSuggestResponse(error=str(exc))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Summary Charts — generate D3/Plotly chart specs from a chat response
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SummaryChartsRequest(BaseModel):
+    query: str = ""
+    response_text: str
+    tool_results: List[Dict] = []
+
+
+class SummaryChartsResponse(BaseModel):
+    charts: List[Dict] = []
+    error: Optional[str] = None
+
+
+@router.post("/summary-charts", response_model=SummaryChartsResponse, tags=["Query"])
+async def summary_charts_endpoint(request: SummaryChartsRequest):
+    """
+    Generate visualization chart specs from an AI chat response.
+    LLM picks the most appropriate D3/Plotly chart types for all
+    quantitative insights in the response.
+    """
+    from app.services.viz_service import generate_summary_charts
+    try:
+        charts = generate_summary_charts(
+            query=request.query,
+            response_text=request.response_text,
+            tool_results=request.tool_results,
+        )
+        return SummaryChartsResponse(charts=charts)
+    except Exception as exc:
+        logger.warning(f"summary-charts error: {exc}")
+
+
+@router.get("/summary-default", tags=["Query"])
+async def summary_default_endpoint():
+    """
+    Return pre-built default summary charts from workset DB data (no LLM).
+    Called when the Summary tab opens without a query context.
+    """
+    from app.services.viz_service import generate_default_summary_charts
+    try:
+        charts = generate_default_summary_charts()
+        return {"charts": charts}
+    except Exception as exc:
+        logger.warning(f"summary-default error: {exc}")
+        return {"charts": [], "error": str(exc)}
+        return SummaryChartsResponse(error=str(exc))
+
+
+class SummaryChatRequest(BaseModel):
+    message: str
+    current_charts: List[Dict] = []
+    context_query: str = ""
+    context_response: str = ""
+
+
+class SummaryChatResponse(BaseModel):
+    reply: str = ""
+    action: str = "answer"
+    charts: List[Dict] = []
+    remove_ids: List[str] = []
+    error: Optional[str] = None
+
+
+@router.post("/summary-chat", response_model=SummaryChatResponse, tags=["Query"])
+async def summary_chat_endpoint(request: SummaryChatRequest):
+    """
+    Chat interface for modifying Summary tab charts.
+    Returns action, new/modified chart specs, and IDs to remove.
+    """
+    from app.services.viz_service import summary_chat
+    try:
+        result = summary_chat(
+            message=request.message,
+            current_charts=request.current_charts,
+            context_query=request.context_query,
+            context_response=request.context_response,
+        )
+        return SummaryChatResponse(**result)
+    except Exception as exc:
+        logger.warning(f"summary-chat error: {exc}")
+        return SummaryChatResponse(error=str(exc))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Add Context — regenerate assistant response with user-added context items
+# ─────────────────────────────────────────────────────────────────────────────
+
+class AddContextRequest(BaseModel):
+    query: str = ""
+    response: str = ""
+    contexts: List[Dict] = []
+
+
+class AddContextResponse(BaseModel):
+    regenerated_response: str = ""
+    error: Optional[str] = None
+
+
+@router.post("/add-context", response_model=AddContextResponse, tags=["Query"])
+async def add_context_endpoint(request: AddContextRequest):
+    """
+    Regenerate an assistant response incorporating user-added context items
+    (new text, table rows/columns, or general enrichments).
+    """
+    from app.services.viz_service import add_context_to_response
+    try:
+        result = add_context_to_response(
+            query=request.query,
+            response=request.response,
+            contexts=request.contexts,
+        )
+        return AddContextResponse(regenerated_response=result)
+    except Exception as exc:
+        logger.warning(f"add-context error: {exc}")
+        return AddContextResponse(error=str(exc))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

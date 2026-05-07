@@ -9,6 +9,7 @@ Pattern mirrors simulationLocal reference project:
   5. Return structured response
 """
 
+import re
 import time
 from typing import Any, Dict, List, Optional
 from loguru import logger
@@ -42,7 +43,15 @@ def _prune_tool_data_from_history(contents: List[Dict]) -> List[Dict]:
 
     Kept:    role=user text turns, role=model text turns, functionCall declarations
     Stripped: functionResponse data bodies  →  replaced with a lightweight stub
+    Also:    persona-specific Takeaway lines removed from old model text turns
+             so the LM doesn't mimic a stale persona style.
     """
+    # Matches "**<Persona Name> Takeaway:**" and everything after it on that line
+    _takeaway_re = re.compile(
+        r'\*\*(?:Revenue Manager|Route Analyst|Network Strategist|Ops Manager|Alliance Director) Takeaway:?\*\*.*',
+        re.IGNORECASE,
+    )
+
     pruned: List[Dict] = []
     for turn in contents:
         role  = turn.get("role", "")
@@ -50,7 +59,15 @@ def _prune_tool_data_from_history(contents: List[Dict]) -> List[Dict]:
         new_parts: List[Dict] = []
         for p in parts:
             if "text" in p:
-                new_parts.append(p)
+                if role == "model":
+                    # Strip persona Takeaway lines so stale persona style doesn't leak
+                    cleaned = "\n".join(
+                        line for line in p["text"].split("\n")
+                        if not _takeaway_re.match(line.strip())
+                    )
+                    new_parts.append({"text": cleaned})
+                else:
+                    new_parts.append(p)
             elif "functionCall" in p:
                 # Keep the call declaration so the LM knows which tool was invoked
                 new_parts.append(p)

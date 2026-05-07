@@ -241,6 +241,8 @@ def load_skd_file(path: Path) -> Tuple[pd.DataFrame, List[str]]:
             utc_arr     = _parse_skd_utc_offset(parts[13])
             aircraft    = parts[16].strip().upper()
             service_type = parts[24].strip() if len(parts) > 24 else "J"
+            codeshare_al  = parts[21].strip().upper() if len(parts) > 21 else ""
+            codeshare_flt = parts[22].strip().upper() if len(parts) > 22 else ""
 
             if not origin or not destination or len(origin) != 3 or len(destination) != 3:
                 skipped += 1
@@ -268,6 +270,11 @@ def load_skd_file(path: Path) -> Tuple[pd.DataFrame, List[str]]:
                 "service_type":    service_type,
                 "terminal_dep":    None,
                 "terminal_arr":    None,
+                # Codeshare / carrier role fields
+                "marketing_airline":  airline,
+                "operating_airline":  codeshare_al if codeshare_al and codeshare_al != airline else airline,
+                "is_codeshare":       codeshare_al != "" and codeshare_al != airline,
+                "codeshare_flight":   codeshare_flt or None,
                 "source_file":     path.name,
             })
 

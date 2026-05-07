@@ -24,6 +24,11 @@ CREATE TABLE IF NOT EXISTS flights (
     service_type        VARCHAR,          -- J=Scheduled, G=Positioning/NonOps
     terminal_dep        VARCHAR,          -- SSIM departure terminal code
     terminal_arr        VARCHAR,          -- SSIM arrival terminal code
+    -- Codeshare / carrier role columns
+    marketing_airline   VARCHAR,          -- Airline code selling the flight (= airline if own-operated)
+    operating_airline   VARCHAR,          -- Airline code physically operating the flight
+    is_codeshare        BOOLEAN,          -- TRUE when marketing != operating carrier
+    codeshare_flight    VARCHAR,          -- Operating carrier's flight designator (e.g. EK5012)
     source_file         VARCHAR,
     load_timestamp      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -59,9 +64,13 @@ def init_db() -> None:
     execute(DDL_QUERY_LOG)
     # Migrate existing DB — add new columns if absent (DuckDB supports IF NOT EXISTS)
     for col, typedef in [
-        ("service_type",  "VARCHAR"),
-        ("terminal_dep",  "VARCHAR"),
-        ("terminal_arr",  "VARCHAR"),
+        ("service_type",      "VARCHAR"),
+        ("terminal_dep",      "VARCHAR"),
+        ("terminal_arr",      "VARCHAR"),
+        ("marketing_airline", "VARCHAR"),
+        ("operating_airline", "VARCHAR"),
+        ("is_codeshare",      "BOOLEAN"),
+        ("codeshare_flight",  "VARCHAR"),
     ]:
         try:
             execute(f"ALTER TABLE flights ADD COLUMN IF NOT EXISTS {col} {typedef}")

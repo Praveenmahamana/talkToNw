@@ -77,6 +77,11 @@ _ALIASES: Dict[str, str] = {
     "service_type":     "service_type",
     "terminal_dep":     "terminal_dep",
     "terminal_arr":     "terminal_arr",
+    # Codeshare / carrier role fields
+    "marketing_airline":  "marketing_airline",
+    "operating_airline":  "operating_airline",
+    "is_codeshare":       "is_codeshare",
+    "codeshare_flight":   "codeshare_flight",
 }
 
 REQUIRED_CANONICAL = {"origin", "destination", "departure_local"}
@@ -283,6 +288,21 @@ def normalise(raw_df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
                 "service_type":     _safe(row, col_map.get("service_type")) or "J",
                 "terminal_dep":     _safe(row, col_map.get("terminal_dep")) or None,
                 "terminal_arr":     _safe(row, col_map.get("terminal_arr")) or None,
+                # Codeshare / carrier role fields — pass through if present, otherwise derive
+                "marketing_airline": (
+                    _safe(row, col_map.get("marketing_airline")) or airline_raw or None
+                ),
+                "operating_airline": (
+                    _safe(row, col_map.get("operating_airline")) or airline_raw or None
+                ),
+                "is_codeshare": (
+                    bool(row[col_map["is_codeshare"]]) if "is_codeshare" in col_map
+                    and col_map["is_codeshare"] in row.index and pd.notna(row[col_map["is_codeshare"]])
+                    else False
+                ),
+                "codeshare_flight": (
+                    _safe(row, col_map.get("codeshare_flight")) or None
+                ),
                 "source_file":      _safe(row, "source_file") if "source_file" in row.index else "",
                 "load_timestamp":   datetime.utcnow(),
             })

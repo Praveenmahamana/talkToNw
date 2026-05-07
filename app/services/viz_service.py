@@ -59,6 +59,10 @@ def _find_label_value_cols(columns: List[str], rows: List[Dict]):
     return label_col, value_col
 
 
+import logging
+logger = logging.getLogger(__name__)
+
+
 def _detect_chart_type(columns: List[str], rows: List[Dict]) -> str:
     cl = [c.lower() for c in columns]
     # "share" columns sum to ~100% across labels → pie makes sense
@@ -1028,3 +1032,928 @@ def suggest_chart_spec(
     except Exception:
         return None
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Summary Charts — generate D3/Plotly chart specs from a full chat response
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SUMMARY_CHARTS_SYSTEM = """\
+You are an expert data visualization scientist for an airline intelligence platform.
+
+Analyze the AI assistant's response and generate a JSON array of chart specifications
+that visually represent ALL quantitative insights in the response.
+
+OUTPUT: Only a valid JSON array. Use [] if no meaningful numeric data exists.
+
+Each chart spec object:
+{
+  "id": "c1",                    // unique string ID
+  "type": "<chart_type>",        // see types below
+  "title": "<specific title>",   // data-driven, name the entities/metrics
+  "subtitle": "<context>",       // optional, ≤60 chars
+  "width": "half"|"full",        // full = spans 2 columns in grid
+  "note": "<1-2 sentence insight>",  // optional
+  "data": [...],                 // REQUIRED array of uniform objects with REAL values
+
+  // Field mappings (vary by type):
+  "x": "<field>",        // bar, line, area, scatter
+  "y": "<field>",        // bar, line, area, scatter (or array for grouped/stacked)
+  "group": "<field>",    // bar-grouped, bar-stacked, area-stacked, streamgraph
+  "size": "<field>",     // bubble
+  "label": "<field>",    // pie, donut, treemap, sunburst, radial-bar
+  "value": "<field>",    // pie, donut, treemap, sunburst, radial-bar, waterfall, funnel
+  "source": "<field>",   // sankey, chord, force
+  "target": "<field>",   // sankey, chord, force
+  "weight": "<field>",   // sankey, chord, force
+  "rows": "<field>",     // heatmap, calendar
+  "cols": "<field>",     // heatmap
+  "val": "<field>",      // heatmap, calendar
+  "bins": 10,            // histogram
+  "categories": ["<f1>","<f2>"]  // parallel: list of numeric field names
+}
+
+CHART TYPES (from D3 Observable gallery):
+  bar            — vertical bar (category → numeric value)
+  bar-horizontal — horizontal bar (better for long labels, rankings)
+  bar-grouped    — multiple series side-by-side (needs group field)
+  bar-stacked    — stacked bars, absolute or percent
+  line           — line chart (ordered x, numeric y)
+  area           — filled area chart
+  area-stacked   — stacked area (multiple series, needs group field)
+  streamgraph    — stream graph (smooth stacked area)
+  scatter        — scatter plot (2 numeric axes)
+  bubble         — bubble chart (x, y, size all numeric)
+  pie            — pie chart (use only for ≤6 slices)
+  donut          — donut chart (preferred over pie)
+  radar          — radar/spider chart (multi-metric entity comparison)
+  histogram      — frequency distribution (one numeric field in data as "x")
+  box            — box plot (category + numeric: "x" and "y")
+  heatmap        — 2D heat map matrix
+  treemap        — hierarchical rectangles (label + value + optional parent)
+  sunburst       — hierarchical rings
+  sankey         — flow diagram (source → target → weight)
+  chord          — chord/relationship diagram (bidirectional flows)
+  force          — force-directed network graph
+  waterfall      — cumulative gain/loss chart
+  funnel         — conversion funnel (label + value, ordered)
+  parallel       — parallel coordinates (categories list + data)
+  radial-bar     — radial/coxcomb bar
+  bump           — bump/slope chart (rank changes over time)
+  calendar       — calendar heat map (date + value)
+  arc-diagram    — arc diagram: nodes on line, curved arcs above; use for airline route connections, partnerships (source, target, optional weight)
+  chord-directed — directed chord with asymmetric flows and arrows; for itinerary flows O→connect→D (source, target, weight)
+  radial-tree    — radial tidy tree for hierarchies; airline hub trees (id, parent, value, label)
+  force-tree     — force-directed hierarchy tree; hub-spoke networks (id, parent, value, label)
+  sequence-sunburst — multi-level click-through sunburst; for airline→region→route→FN breakdowns (path as "A/B/C", value)
+
+RULES:
+1. ONLY use exact numeric values from the response — NEVER fabricate numbers
+2. Each chart reveals a DISTINCT, non-overlapping insight
+3. Choose the most informative chart type for each insight:
+   - Rankings → bar-horizontal
+   - Time trends → line or area
+   - Part-of-whole (≤8 slices) → donut or treemap
+   - Flows between nodes → sankey or chord
+   - Distribution → histogram or box
+   - Correlations → scatter or bubble
+   - Hierarchy → treemap or sunburst
+   - Multi-metric comparison → radar or parallel
+4. Use "full" width for: sankey, chord, force, parallel, heatmap, or >10 data points in bar
+5. Sort data descending by value (rankings) or chronologically (time series)
+6. Generate ALL charts meaningful from the data — no artificial limit
+7. Use simple snake_case keys in data objects (no spaces)
+8. Tool results (structured rows) should produce richer, more detailed charts
+9. CRITICAL — field name integrity: every value you put in "x", "y", "label", "value",
+   "source", "target", "weight", "group", "size", "rows", "cols", "val" MUST exactly
+   match a key present in every object inside "data". Mismatches produce blank charts.
+10. Minimum data: do NOT generate a chart with fewer than 2 data rows (5 for histogram,
+    3 for box/bump, 7 for calendar, 2 for sankey/chord/force).
+11. All numeric values in data must be real numbers (int or float), never null or empty string.
+12. If you are not confident about the exact values for a chart, omit that chart entirely.
+13. AIRLINE DATA PATTERNS — apply these chart types when the data warrants:
+    - Thru/connecting flights: sankey (origin→connecting city→destination, weight=freq/seats)
+    - Itinerary flows: chord-directed (show asymmetric flows between cities)
+    - Route networks: arc-diagram (cities as nodes on line, arcs = routes)
+    - Hub hierarchies: radial-tree or force-tree (airline→hub→spoke structure)
+    - Multi-level breakdowns: sequence-sunburst (drill-down path sequences)
+    - Market share by region/airline: treemap or stacked-bar with 2 groupings
+    - Schedule frequency patterns: heatmap (day-of-week vs time-of-day)
+    - Capacity comparisons: bubble (x=frequency, y=seats, size=load factor)
+14. DETAIL MAXIMIZATION: Include as much detail as the data supports. For D3 charts prefer
+    data with 5-15 nodes/paths. For Sankey include all intermediate nodes. For trees include
+    all hierarchy levels. For sequence-sunburst include at least 3 levels.
+15. When tool_results contain flight/schedule data: extract connecting city information for
+    sankey; extract O&D pairs for chord-directed; extract airline/route hierarchies for trees.
+"""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DEFAULT SUMMARY CHARTS — built directly from workset DB data (no LLM)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def generate_default_summary_charts() -> List[Dict]:
+    """
+    Build 7-8 rich default charts from workset_base + workset_spill data.
+    All queries are direct SQL — no LLM involved.
+    Every chart is filtered / scoped to the Host airline.
+    Returns list of chart specs in the same format as generate_summary_charts().
+    """
+    import duckdb
+    from app.database.db import get_db_path
+    db_path = get_db_path()
+
+    def _db() -> duckdb.DuckDBPyConnection:
+        return duckdb.connect(database=db_path, read_only=False)
+
+    def _q(sql: str) -> List[Dict]:
+        conn = _db()
+        try:
+            return conn.execute(sql).df().to_dict(orient="records")
+        except Exception as exc:
+            logger.warning(f"default chart query failed: {exc}")
+            return []
+        finally:
+            try: conn.close()
+            except Exception: pass
+
+    # ── Detect host airline ──────────────────────────────────────────────────
+    # 1. Try workset_profile.json (most reliable — written by workset_service at load)
+    host: str = ""
+    try:
+        from app.services.workset_service import _get_workset_dir
+        _wd = _get_workset_dir()
+        _profile_path = _wd / "dashboard_output" / "workset_profile.json"
+        if _profile_path.exists():
+            import json as _json
+            _prof = _json.loads(_profile_path.read_text())
+            host = (_prof.get("host_airline") or "").upper().strip()
+    except Exception:
+        pass
+
+    # 2. Fallback: most-represented airline in workset_base (host dominates the workset)
+    if not host:
+        fb = _q("SELECT mkt_airline AS h, COUNT(*) AS c FROM workset_base "
+                "WHERE mkt_airline IS NOT NULL GROUP BY mkt_airline ORDER BY c DESC LIMIT 1")
+        host = (fb[0]["h"] or "").upper().strip() if fb else "HOST"
+
+    # Sanitise — only safe alphanumeric codes (max 4 chars)
+    host = "".join(c for c in host if c.isalnum())[:4]
+    logger.info(f"generate_default_summary_charts: host={host!r}")
+
+    charts: List[Dict] = []
+
+    # ── 1. SANKEY — Host: Origin → Via-Airline → Destination ────────────────
+    try:
+        rows = _q(f"""
+            WITH top AS (
+                SELECT market_origin AS origin, market_dest AS destin, airline,
+                       SUM(total_pax) AS pax
+                FROM workset_spill
+                WHERE total_pax > 0
+                  AND market_origin IS NOT NULL AND market_dest IS NOT NULL
+                  AND UPPER(TRIM(airline)) = '{host}'
+                  AND is_codeshare = 0
+                GROUP BY market_origin, market_dest, airline
+                ORDER BY pax DESC
+                LIMIT 25
+            )
+            SELECT
+                origin                                      AS source,
+                COALESCE(airline,'?') || ' (' || origin || ')' AS via,
+                destin                                      AS target,
+                pax                                         AS value
+            FROM top
+        """)
+        # Build two-stage links: origin→via, via→dest
+        links = []
+        for r in rows:
+            links.append({"source": r["source"], "target": r["via"],  "value": r["value"]})
+            links.append({"source": r["via"],    "target": r["target"], "value": r["value"]})
+        if len(links) >= 4:
+            charts.append({
+                "id": "def_sankey", "type": "sankey", "width": "full",
+                "title": f"{host} Passenger Flow: Origin → Airline → Destination",
+                "subtitle": f"Top 25 O&D markets — {host} workset traffic",
+                "source": "source", "target": "target", "weight": "value",
+                "data": links,
+            })
+    except Exception as e:
+        logger.warning(f"default sankey failed: {e}")
+
+    # ── 2. CHORD DIRECTED — Host: Airport-to-airport O&D flow matrix ─────────
+    try:
+        rows = _q(f"""
+            WITH top_airports AS (
+                SELECT market_origin AS ap FROM workset_spill
+                WHERE total_pax > 0 AND is_codeshare = 0
+                  AND UPPER(TRIM(airline)) = '{host}'
+                GROUP BY market_origin ORDER BY SUM(total_pax) DESC LIMIT 14
+            ),
+            flows AS (
+                SELECT s.market_origin AS origin, s.market_dest AS destin,
+                       SUM(s.total_pax) AS flow
+                FROM workset_spill s
+                JOIN top_airports ta ON s.market_origin = ta.ap
+                WHERE s.total_pax > 0 AND s.is_codeshare = 0
+                  AND UPPER(TRIM(s.airline)) = '{host}'
+                  AND s.market_dest IN (SELECT ap FROM top_airports)
+                  AND s.market_origin <> s.market_dest
+                GROUP BY s.market_origin, s.market_dest
+            )
+            SELECT origin, destin, flow FROM flows ORDER BY flow DESC LIMIT 100
+        """)
+        if len(rows) >= 4:
+            charts.append({
+                "id": "def_chord", "type": "chord-directed",
+                "title": f"{host} Directed O&D Flow Between Top Airports",
+                "subtitle": f"Top 14 {host} airports by passenger volume",
+                "source": "origin", "target": "destin", "weight": "flow",
+                "data": rows,
+            })
+    except Exception as e:
+        logger.warning(f"default chord failed: {e}")
+
+    # ── 3. ICICLE — Host itinerary stop-type breakdown ────────────────────────
+    try:
+        rows = _q(f"""
+            WITH base AS (
+                SELECT
+                    CASE stops
+                        WHEN 0 THEN 'Nonstop'
+                        WHEN 1 THEN '1-Stop'
+                        ELSE       '2+ Stops'
+                    END AS stop_type,
+                    market_origin || '-' || market_dest AS market,
+                    ROUND(SUM(total_pax)) AS traffic
+                FROM workset_spill
+                WHERE total_pax > 0 AND is_codeshare = 0
+                  AND UPPER(TRIM(airline)) = '{host}'
+                GROUP BY stop_type, market_origin, market_dest
+            ),
+            ranked AS (
+                SELECT *,
+                       ROW_NUMBER() OVER (PARTITION BY stop_type ORDER BY traffic DESC) AS rn
+                FROM base
+            )
+            SELECT stop_type, market, traffic
+            FROM ranked WHERE rn <= 40
+            ORDER BY stop_type, traffic DESC
+        """)
+        totals_rows = _q(f"""
+            SELECT
+                CASE stops
+                    WHEN 0 THEN 'Nonstop'
+                    WHEN 1 THEN '1-Stop'
+                    ELSE       '2+ Stops'
+                END AS stop_type,
+                ROUND(SUM(total_pax)) AS traffic
+            FROM workset_spill
+            WHERE total_pax > 0 AND is_codeshare = 0
+              AND UPPER(TRIM(airline)) = '{host}'
+            GROUP BY stop_type
+        """)
+        if len(rows) >= 6:
+            stop_totals = {r["stop_type"]: float(r["traffic"] or 0) for r in totals_rows}
+            total = sum(stop_totals.values())
+
+            tm_data = [{"label": f"{host} Traffic", "parent": "", "value": round(total)}]
+            for st, tot in sorted(stop_totals.items(), key=lambda x: -x[1]):
+                tm_data.append({"label": st, "parent": f"{host} Traffic", "value": round(tot)})
+            for r in rows:
+                tm_data.append({
+                    "label": r["market"],
+                    "parent": r["stop_type"],
+                    "value": int(float(r["traffic"] or 0)),
+                })
+
+            charts.append({
+                "id": "def_itinerary", "type": "icicle",
+                "title": f"{host} Itinerary Path Breakdown",
+                "subtitle": f"{host} traffic by stop type → top O&D markets (size = passengers)",
+                "label": "label", "parent": "parent", "value": "value",
+                "data": tm_data,
+            })
+    except Exception as e:
+        logger.warning(f"default itinerary treemap failed: {e}")
+
+    # ── 4. HEATMAP — Host flight frequency by day-of-week × departure hour ───
+    try:
+        rows = _q(f"""
+            SELECT
+                CASE day_of_week
+                    WHEN 0 THEN 'Sun' WHEN 1 THEN 'Mon' WHEN 2 THEN 'Tue'
+                    WHEN 3 THEN 'Wed' WHEN 4 THEN 'Thu' WHEN 5 THEN 'Fri'
+                    ELSE 'Sat' END AS day,
+                CAST(SUBSTR(LPAD(CAST(dep_time AS VARCHAR), 4, '0'), 1, 2) AS INTEGER) AS hour,
+                COUNT(*) AS freq
+            FROM workset_base
+            WHERE day_of_week IS NOT NULL AND dep_time IS NOT NULL
+              AND mkt_ind <= 1
+              AND UPPER(TRIM(mkt_airline)) = '{host}'
+            GROUP BY day_of_week, hour
+            ORDER BY day_of_week, hour
+        """)
+        if len(rows) >= 10:
+            charts.append({
+                "id": "def_heatmap", "type": "heatmap",
+                "title": f"{host} Flight Frequency by Day & Departure Hour",
+                "subtitle": f"{host} departure density across week — schedule pattern",
+                "rows": "day", "cols": "hour", "val": "freq",
+                "data": rows,
+            })
+    except Exception as e:
+        logger.warning(f"default heatmap failed: {e}")
+
+    # ── 5. TREEMAP — Seat capacity comparison (host + top competitors) ────────
+    try:
+        rows = _q(f"""
+            SELECT
+                mkt_airline AS airline,
+                ROUND(SUM(apm_cap)) AS capacity,
+                ROUND(SUM(apm_pax)) AS traffic
+            FROM workset_base
+            WHERE mkt_airline IS NOT NULL AND mkt_ind <= 1
+            GROUP BY mkt_airline
+            HAVING capacity > 0
+            ORDER BY
+                CASE WHEN UPPER(TRIM(mkt_airline)) = '{host}' THEN 0 ELSE 1 END,
+                capacity DESC
+            LIMIT 25
+        """)
+        if len(rows) >= 3:
+            data = [{"label": "All Airlines", "parent": "", "value": sum(r["capacity"] for r in rows)}]
+            for r in rows:
+                data.append({"label": r["airline"], "parent": "All Airlines", "value": r["capacity"]})
+            charts.append({
+                "id": "def_treemap", "type": "treemap",
+                "title": f"Seat Capacity: {host} vs Competitors",
+                "subtitle": f"Total scheduled seats — {host} shown first",
+                "label": "label", "parent": "parent", "value": "value",
+                "data": data,
+            })
+    except Exception as e:
+        logger.warning(f"default treemap failed: {e}")
+
+    # ── 6. RADIAL TIDY TREE — Host + top competitors: airline → routes ────────
+    try:
+        rows = _q(f"""
+            WITH airline_routes AS (
+                SELECT mkt_airline AS airline,
+                       origin || '-' || dest AS route,
+                       COUNT(*) AS freq
+                FROM workset_base
+                WHERE mkt_ind <= 1 AND mkt_airline IS NOT NULL
+                GROUP BY mkt_airline, origin, dest
+            ),
+            host_entry AS (
+                SELECT airline FROM airline_routes
+                WHERE UPPER(TRIM(airline)) = '{host}'
+                LIMIT 1
+            ),
+            top_competitors AS (
+                SELECT airline FROM (
+                    SELECT airline, SUM(freq) AS f FROM airline_routes
+                    WHERE UPPER(TRIM(airline)) != '{host}'
+                    GROUP BY airline ORDER BY f DESC LIMIT 9
+                ) sub
+            ),
+            top_airlines AS (
+                SELECT airline FROM host_entry
+                UNION ALL
+                SELECT airline FROM top_competitors
+            ),
+            ranked AS (
+                SELECT ar.*, ROW_NUMBER() OVER (PARTITION BY ar.airline ORDER BY ar.freq DESC) AS rn
+                FROM airline_routes ar
+                JOIN top_airlines ta ON ar.airline = ta.airline
+            )
+            SELECT airline, route, freq FROM ranked WHERE rn <= 5
+            ORDER BY
+                CASE WHEN UPPER(TRIM(airline)) = '{host}' THEN 0 ELSE 1 END,
+                airline, freq DESC
+        """)
+        if len(rows) >= 6:
+            tree_data = [{"id": "Network", "parent": "", "label": "All Routes"}]
+            airlines_seen = set()
+            for r in rows:
+                aln = r["airline"]
+                if aln not in airlines_seen:
+                    tree_data.append({"id": aln, "parent": "Network", "label": aln})
+                    airlines_seen.add(aln)
+                tree_data.append({"id": f"{aln}-{r['route']}", "parent": aln, "label": r["route"]})
+            charts.append({
+                "id": "def_radial_tree", "type": "radial-tree", "width": "full",
+                "title": f"Airline Route Hierarchy — {host} + Top Competitors",
+                "subtitle": f"{host} routes (first branch) vs top 9 competitors",
+                "id_field": "id", "parent": "parent", "label": "label",
+                "data": tree_data,
+            })
+    except Exception as e:
+        logger.warning(f"default radial tree failed: {e}")
+
+    # ── 7. FORCE TREE — Host airport connectivity network ─────────────────────
+    try:
+        rows = _q(f"""
+            WITH top_airports AS (
+                SELECT origin AS ap, COUNT(DISTINCT dest) AS routes
+                FROM workset_base
+                WHERE mkt_ind <= 1 AND UPPER(TRIM(mkt_airline)) = '{host}'
+                GROUP BY origin ORDER BY routes DESC LIMIT 12
+            ),
+            connections AS (
+                SELECT b.origin, b.dest, COUNT(*) AS freq
+                FROM workset_base b
+                JOIN top_airports ta ON b.origin = ta.ap
+                WHERE b.mkt_ind <= 1 AND UPPER(TRIM(b.mkt_airline)) = '{host}'
+                  AND b.dest IN (SELECT ap FROM top_airports)
+                  AND b.origin <> b.dest
+                GROUP BY b.origin, b.dest
+                ORDER BY freq DESC
+                LIMIT 50
+            )
+            SELECT origin, dest FROM connections
+        """)
+        if len(rows) >= 5:
+            airports = set()
+            for r in rows:
+                airports.add(r["origin"]); airports.add(r["dest"])
+            from collections import Counter
+            hub_counts = Counter()
+            for r in rows:
+                hub_counts[r["origin"]] += 1
+                hub_counts[r["dest"]] += 1
+            hub = hub_counts.most_common(1)[0][0]
+            tree_data = [{"id": hub, "parent": "", "label": hub}]
+            added = {hub}
+            for r in rows:
+                for ap in [r["origin"], r["dest"]]:
+                    if ap not in added:
+                        tree_data.append({"id": ap, "parent": hub, "label": ap})
+                        added.add(ap)
+            charts.append({
+                "id": "def_force_tree", "type": "force-tree", "width": "full",
+                "title": f"{host} Airport Connectivity Network",
+                "subtitle": f"Top 12 {host} airports — route interconnection",
+                "id_field": "id", "parent": "parent", "label": "label",
+                "data": tree_data,
+            })
+    except Exception as e:
+        logger.warning(f"default force tree failed: {e}")
+
+    # ── 8. BAR — Host top O&D markets by demand ───────────────────────────────
+    try:
+        rows = _q(f"""
+            SELECT
+                market_origin || ' → ' || market_dest AS market,
+                ROUND(SUM(total_demand)) AS demand,
+                ROUND(SUM(total_pax)) AS traffic,
+                ROUND(SUM(total_spill)) AS spill
+            FROM workset_spill
+            WHERE total_demand > 0 AND is_codeshare = 0
+              AND UPPER(TRIM(airline)) = '{host}'
+            GROUP BY market_origin, market_dest
+            ORDER BY demand DESC
+            LIMIT 20
+        """)
+        if len(rows) >= 4:
+            charts.append({
+                "id": "def_top_markets", "type": "bar",
+                "title": f"{host} Top 20 O&D Markets by Demand",
+                "subtitle": f"Total weekly demand — {host} workset data",
+                "x": "market", "y": "demand",
+                "data": rows,
+            })
+    except Exception as e:
+        logger.warning(f"default bar failed: {e}")
+
+    # ── 9. ARC DIAGRAM — Host spill flows ─────────────────────────────────────
+    try:
+        rows = _q(f"""
+            SELECT market_origin AS source, market_dest AS target,
+                   SUM(total_spill) AS spill
+            FROM workset_spill
+            WHERE total_spill > 0 AND is_codeshare = 0
+              AND UPPER(TRIM(airline)) = '{host}'
+            GROUP BY market_origin, market_dest
+            ORDER BY spill DESC
+            LIMIT 40
+        """)
+        if len(rows) >= 6:
+            charts.append({
+                "id": "def_arc_spill", "type": "arc-diagram",
+                "title": f"{host} Passenger Spill Flows Between Markets",
+                "subtitle": f"{host} spilled demand arcs — thicker = more spill",
+                "source": "source", "target": "target", "weight": "spill",
+                "data": rows,
+            })
+    except Exception as e:
+        logger.warning(f"default arc failed: {e}")
+
+    logger.info(f"generate_default_summary_charts: built {len(charts)} charts (host={host!r})")
+    return charts
+
+
+def generate_summary_charts(
+    query: str,
+    response_text: str,
+    tool_results: List[Dict],
+) -> List[Dict]:
+    """
+    Ask the LLM to generate chart specs from a chat response.
+    Returns a list of chart spec dicts (may be empty list).
+    """
+    import json as _json
+    from app.ai.vertex_client import generate_content, is_available, extract_text
+
+    if not is_available():
+        return []
+
+    # Build tool_results summary for context
+    tool_summary_parts = []
+    for tr in (tool_results or [])[:6]:
+        name = tr.get("function_name") or tr.get("tool") or "tool"
+        result = tr.get("result") or {}
+        rows = tr.get("rows") or result.get("rows", [])
+        cols = tr.get("columns") or result.get("columns", [])
+        if rows and cols:
+            sample = _json.dumps(rows[:25], default=str)
+            tool_summary_parts.append(
+                f"\nTool '{name}': {len(rows)} rows, columns={cols}\nSample rows: {sample[:2000]}"
+            )
+
+    tool_block = "\n\nSTRUCTURED DATA FROM TOOLS:" + "".join(tool_summary_parts) if tool_summary_parts else ""
+
+    user_prompt = (
+        f"USER QUERY: {query[:400]}\n\n"
+        f"AI RESPONSE:\n{response_text[:3500]}"
+        f"{tool_block}\n\n"
+        "Generate chart specifications for ALL quantitative insights above.\n"
+        "Output ONLY a valid JSON array. Use [] if no meaningful numeric data."
+    )
+
+    try:
+        resp = generate_content(
+            contents=[{"role": "user", "parts": [{"text": user_prompt}]}],
+            system_instruction=_SUMMARY_CHARTS_SYSTEM,
+            temperature=0.0,
+        )
+        raw = extract_text(resp)
+        if not raw:
+            return []
+
+        raw = raw.strip()
+        # Strip markdown code fences
+        if raw.startswith("```"):
+            parts = raw.split("```")
+            raw = parts[1] if len(parts) > 1 else raw
+            if raw.startswith("json"):
+                raw = raw[4:]
+        raw = raw.strip().rstrip("`").strip()
+
+        # Find JSON array bounds
+        start = raw.find("[")
+        end = raw.rfind("]")
+        if start == -1 or end == -1:
+            return []
+        raw = raw[start:end + 1]
+
+        specs = _json.loads(raw)
+        if not isinstance(specs, list):
+            return []
+
+        # Validate and assign IDs — enforce field-mapping integrity
+        _CHART_REQUIRED = {
+            'bar': ('x', 'y'), 'bar-horizontal': ('x', 'y'),
+            'bar-grouped': ('x', 'y'), 'bar-stacked': ('x', 'y'),
+            'line': ('x', 'y'), 'area': ('x', 'y'),
+            'area-stacked': ('x', 'y'), 'streamgraph': ('x', 'y'),
+            'scatter': ('x', 'y'), 'bubble': ('x', 'y', 'size'),
+            'pie': ('label', 'value'), 'donut': ('label', 'value'),
+            'radar': ('label',), 'histogram': ('x',), 'box': ('x', 'y'),
+            'heatmap': ('rows', 'cols', 'val'),
+            'treemap': ('label', 'value'), 'sunburst': ('label', 'value'),
+            'sankey': ('source', 'target'), 'chord': ('source', 'target'),
+            'force': ('source', 'target'),
+            'waterfall': ('x', 'y'), 'funnel': ('label', 'value'),
+            'radial-bar': ('label', 'value'), 'bump': ('x', 'y', 'group'),
+            'calendar': ('rows', 'val'),
+            'arc-diagram': ('source', 'target'),
+            'chord-directed': ('source', 'target', 'weight'),
+            'radial-tree': ('id', 'parent'),
+            'force-tree': ('id', 'parent'),
+            'sequence-sunburst': ('path', 'value'),
+        }
+        _CHART_MIN_ROWS = {
+            'histogram': 4, 'box': 3, 'chord': 2, 'sankey': 2,
+            'force': 2, 'bump': 3, 'calendar': 7,
+            'arc-diagram': 2, 'chord-directed': 2,
+            'radial-tree': 3, 'force-tree': 3, 'sequence-sunburst': 3,
+        }
+        valid = []
+        for i, s in enumerate(specs):
+            if not isinstance(s, dict):
+                continue
+            chart_type = str(s.get("type", "")).lower()
+            if not chart_type:
+                continue
+            data = s.get("data")
+            if not isinstance(data, list) or len(data) == 0:
+                continue
+            # Minimum rows check
+            if len(data) < _CHART_MIN_ROWS.get(chart_type, 1):
+                continue
+            # Collect actual keys present across data rows
+            data_keys: set = set()
+            for row in data:
+                if isinstance(row, dict):
+                    data_keys.update(row.keys())
+            if not data_keys:
+                continue
+            # Validate required field mappings
+            required = _CHART_REQUIRED.get(chart_type, ())
+            bad = False
+            for field_key in required:
+                mapped_col = s.get(field_key)
+                if not mapped_col:
+                    bad = True; break
+                if mapped_col not in data_keys:
+                    # Try case-insensitive match
+                    match = next((k for k in data_keys
+                                  if k.lower() == str(mapped_col).lower()), None)
+                    if match:
+                        s[field_key] = match
+                    else:
+                        bad = True; break
+            if bad:
+                continue
+            if not s.get("id"):
+                s["id"] = f"c{i + 1}"
+            valid.append(s)
+
+        # AI final look: curate and reorder by visual impact
+        if len(valid) > 1:
+            valid = _curate_summary_specs(valid, query)
+
+        return valid
+
+    except Exception as exc:
+        logger.warning(f"generate_summary_charts error: {exc}")
+        return []
+
+
+def _curate_summary_specs(specs: List[Dict], query: str) -> List[Dict]:
+    """
+    Second LLM pass: review validated chart specs, remove redundant/low-value charts,
+    and return them ordered by visual impact. If curation fails, returns specs unchanged.
+    """
+    import json as _json
+    from app.ai.vertex_client import generate_content, is_available, extract_text
+
+    if not is_available() or not specs:
+        return specs
+
+    # Only send id + type + title to keep the prompt tiny
+    slim = [{"id": s.get("id"), "type": s.get("type"), "title": s.get("title", "")} for s in specs]
+
+    prompt = (
+        f'USER QUERY: "{query[:300]}"\n\n'
+        f"CHART CANDIDATES (already validated, data is real):\n{_json.dumps(slim, indent=2)}\n\n"
+        "Your task:\n"
+        "1. Remove charts that are REDUNDANT (same insight shown twice in different forms).\n"
+        "2. Remove charts that are NOT MEANINGFULLY INFORMATIVE for the query.\n"
+        "3. Order remaining charts from HIGHEST to LOWEST visual impact.\n"
+        "4. Keep ALL charts that reveal distinct, useful insights — do NOT cap the count.\n\n"
+        "Output ONLY a JSON array of the IDs you want to KEEP, in order. Example: [\"c1\",\"c3\",\"c2\"]\n"
+        "Return ALL IDs if everything is distinct and informative."
+    )
+    try:
+        resp = generate_content(
+            contents=[{"role": "user", "parts": [{"text": prompt}]}],
+            system_instruction="You are a senior data-visualization curator. Be concise and decisive.",
+            temperature=0.0,
+        )
+        raw = extract_text(resp) or ""
+        raw = raw.strip()
+        if raw.startswith("```"):
+            parts = raw.split("```")
+            raw = parts[1] if len(parts) > 1 else raw
+            if raw.startswith("json"): raw = raw[4:]
+        raw = raw.strip().rstrip("`").strip()
+        start, end = raw.find("["), raw.rfind("]")
+        if start == -1 or end == -1:
+            return specs
+        kept_ids = _json.loads(raw[start:end + 1])
+        if not isinstance(kept_ids, list) or not kept_ids:
+            return specs
+        # Reorder specs to match curator order; include any that weren't mentioned
+        id_map = {s.get("id"): s for s in specs}
+        curated = [id_map[cid] for cid in kept_ids if cid in id_map]
+        # Append any spec not mentioned by curator (safety net)
+        mentioned = set(kept_ids)
+        curated += [s for s in specs if s.get("id") not in mentioned]
+        return curated
+    except Exception as exc:
+        logger.warning(f"_curate_summary_specs error (returning original): {exc}")
+        return specs
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Summary Chat
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SUMMARY_CHAT_SYSTEM = """\
+You are an expert data visualization assistant for an airline intelligence dashboard.
+The user is viewing a set of charts in the Summary tab and wants to modify them via chat.
+
+You can:
+1. ADD a new chart  — action="add", put full spec in "charts" array
+2. REPLACE a chart  — action="replace", put full updated spec (same id) in "charts"
+3. REMOVE a chart   — action="remove", put its id in "remove_ids"
+4. MODIFY a chart   — action="modify", put full updated spec (same id) in "charts"
+5. ANSWER a question — action="answer", leave "charts" and "remove_ids" empty
+
+OUTPUT FORMAT — always return a single valid JSON object:
+{
+  "reply": "One-sentence explanation of what changed (or why nothing changed)",
+  "action": "add"|"replace"|"remove"|"modify"|"answer",
+  "charts": [...],
+  "remove_ids": [...]
+}
+
+CRITICAL RULES:
+1. When action is add/replace/modify: the "charts" array MUST contain COMPLETE chart specs,
+   including the FULL "data" array. Copy the existing chart's data verbatim and apply only
+   the changes the user requested. Never return charts with an empty "data" array.
+2. NEVER fabricate numeric values not present in the current chart data or original context.
+3. If the requested information (e.g. competitor data) does not exist in any current chart
+   or the original response context, set action="answer" and explain what's missing — do NOT
+   pretend to have modified a chart.
+4. When changing chart type: copy all existing data, change "type" and adjust field mappings.
+5. When user says "remove/delete X": put its id in remove_ids, leave "charts" empty.
+6. Field mappings (x, y, label, value, source, target, etc.) must exactly match keys in data.
+7. Respond with ONLY the JSON object — no markdown fences, no extra text.
+"""
+
+
+def summary_chat(
+    message: str,
+    current_charts: List[Dict],
+    context_query: str,
+    context_response: str,
+) -> Dict:
+    """
+    Chat interface for modifying Summary tab charts.
+    Returns {reply, action, charts (new/modified specs), remove_ids}.
+    """
+    import json as _json
+    from app.ai.vertex_client import generate_content, is_available, extract_text
+
+    if not is_available():
+        return {"reply": "AI is not available.", "action": "answer", "charts": [], "remove_ids": []}
+
+    # Send full chart specs — the LLM must echo back complete data arrays when modifying
+    charts_json = _json.dumps(current_charts, default=str)
+    # Cap total prompt at ~12k chars, prioritising chart data over response text
+    ctx_response_trunc = context_response[:600] if len(charts_json) > 8000 else context_response[:1200]
+    user_prompt = (
+        f"ORIGINAL QUERY: {context_query[:300]}\n\n"
+        f"ORIGINAL RESPONSE SUMMARY: {ctx_response_trunc}\n\n"
+        f"CURRENT CHARTS (complete specs with data):\n{charts_json}\n\n"
+        f"USER REQUEST: {message}"
+    )
+
+    try:
+        resp = generate_content(
+            contents=[{"role": "user", "parts": [{"text": user_prompt}]}],
+            system_instruction=_SUMMARY_CHAT_SYSTEM,
+            temperature=0.1,
+        )
+        raw = extract_text(resp)
+        if not raw:
+            return {"reply": "No response from AI.", "action": "answer", "charts": [], "remove_ids": []}
+
+        raw = raw.strip()
+        if raw.startswith("```"):
+            parts = raw.split("```")
+            raw = parts[1] if len(parts) > 1 else raw
+            if raw.startswith("json"):
+                raw = raw[4:]
+        raw = raw.strip().rstrip("`").strip()
+
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start == -1 or end == -1:
+            return {"reply": raw[:200], "action": "answer", "charts": [], "remove_ids": []}
+
+        result = _json.loads(raw[start:end + 1])
+        return {
+            "reply": result.get("reply", "Done."),
+            "action": result.get("action", "answer"),
+            "charts": result.get("charts", []) if isinstance(result.get("charts"), list) else [],
+            "remove_ids": result.get("remove_ids", []) if isinstance(result.get("remove_ids"), list) else [],
+        }
+
+    except Exception as exc:
+        logger.warning(f"summary_chat error: {exc}")
+        return {"reply": f"Error: {exc}", "action": "answer", "charts": [], "remove_ids": []}
+
+
+def add_context_to_response(
+    query: str,
+    response: str,
+    contexts: List[Dict],
+) -> str:
+    """
+    Regenerate an assistant response incorporating user-added context items.
+    contexts: [{type: str, instruction: str}, ...]
+
+    Strategy:
+      - If any context requests new entities (airlines, routes, competitors) that
+        need fresh DB data, build an augmented query and re-run through the agent.
+      - Otherwise, synthesise additions with a strong LLM prompt.
+    Returns the regenerated response text.
+    """
+    from app.ai.vertex_client import generate_content, is_available, extract_text
+
+    if not contexts:
+        return response
+
+    # ── Detect if re-querying gives better results ───────────────────────────
+    # "Add X competitor", "include Y airline", "show Z route" → real DB data needed
+    _NEW_ENTITY_PATTERNS = [
+        r'\badd\s+([A-Z]{2,3})\b',          # "add BA", "add UA"
+        r'\binclude\s+([A-Z]{2,3})\b',
+        r'\bshow\s+([A-Z]{2,3})\b',
+        r'\bcompetitor\b',
+        r'\badd\s+\w+\s+airline\b',
+        r'\badd\s+\w+\s+carrier\b',
+        r'\badd\s+route\b',
+    ]
+    import re as _re
+    needs_requery = any(
+        _re.search(pat, c.get('instruction', ''), _re.IGNORECASE)
+        for c in contexts
+        for pat in _NEW_ENTITY_PATTERNS
+    )
+
+    if needs_requery and is_available():
+        # Build an augmented query combining original + context instructions
+        additions = '; '.join(c.get('instruction', '') for c in contexts)
+        augmented_query = (
+            f"{query}. Additionally: {additions}. "
+            "Include all entities and data explicitly requested above."
+        )
+        try:
+            from app.api.routes import _agent
+            result = _agent.query(augmented_query)
+            raw = result.get('answer', '')
+            if raw and len(raw) > 100:
+                return raw.replace('[NAV:', '[_NAV:').strip()  # strip nav markers
+        except Exception as exc:
+            logger.warning(f"add_context re-query failed: {exc}")
+            # fall through to LLM synthesis below
+
+    if not is_available():
+        return response
+
+    ctx_lines = '\n'.join(
+        f"  [{c.get('type', 'general')}] {c.get('instruction', '')}"
+        for c in contexts
+    )
+
+    system = """\
+You are an expert airline intelligence assistant. You will regenerate a response with \
+user-requested additions using BOTH the information already in the response AND your \
+airline industry domain knowledge.
+
+RULES — you MUST follow ALL of them:
+1. Preserve the original markdown structure (headings, tables, bullets, bold).
+2. Extend tables with new rows/columns as requested — populate every cell with real \
+   airline data you know (routes, frequencies, seat counts, hubs, IATA codes). Never \
+   leave a cell empty or write "N/A" when you can infer the value.
+3. When asked to add a competitor airline, add its relevant routes/data in the same \
+   format as existing entries — use your training knowledge of published schedules.
+4. Add new textual sections at the most logical position; do not remove original content.
+5. Do NOT hedge with phrases like "I don't have exact data" — synthesise from domain \
+   knowledge if needed, and clearly note when a figure is an estimate.
+6. Output ONLY the regenerated response — no preamble, no wrapper sentence.
+"""
+
+    user_prompt = (
+        f"ORIGINAL QUERY:\n{query}\n\n"
+        f"PREVIOUS RESPONSE:\n{response}\n\n"
+        f"ADDITIONS TO INCORPORATE (you MUST include ALL of these):\n{ctx_lines}\n\n"
+        "Regenerated response (complete, with all additions):"
+    )
+
+    try:
+        resp = generate_content(
+            contents=[{"role": "user", "parts": [{"text": user_prompt}]}],
+            system_instruction=system,
+            temperature=0.2,
+        )
+        regen = extract_text(resp)
+        return regen.strip() if regen else response
+    except Exception as exc:
+        logger.warning(f"add_context_to_response error: {exc}")
+        return response

@@ -64,6 +64,14 @@ from app.knowledge_graph.graph_analytics import (
     find_shortest_path,
 )
 
+# ── Workset KG (pre-built from customKG pipeline) ────────────────────────────
+from app.knowledge_graph.workset_kg_loader import (
+    init_workset_kg, is_workset_kg_ready, get_workset_graph,
+    get_workset_meta, get_workset_db,
+    get_airports, get_market_flow, get_flow_itineraries,
+    get_legs_between, get_carrier_legs, connecting_airports,
+)
+
 __all__ = [
     # NetworkX
     "init_graph", "get_graph", "is_ready", "rebuild_graph",
@@ -83,4 +91,9 @@ __all__ = [
     "init_analytics", "is_analytics_ready",
     "get_airport_analytics", "get_network_analytics_summary",
     "find_shortest_path",
+    # Workset KG (customKG pipeline)
+    "init_workset_kg", "is_workset_kg_ready", "get_workset_graph",
+    "get_workset_meta", "get_workset_db",
+    "get_airports", "get_market_flow", "get_flow_itineraries",
+    "get_legs_between", "get_carrier_legs", "connecting_airports",
 ]

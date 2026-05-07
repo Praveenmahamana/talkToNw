@@ -96,6 +96,13 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning(f"Knowledge graph construction failed: {exc}")
 
+        # Load pre-built Workset KG (kg_light.json / kg.duckdb) — fast (~0.5s)
+        try:
+            from app.knowledge_graph.workset_kg_loader import init_workset_kg
+            init_workset_kg()
+        except Exception as exc:
+            logger.warning(f"Workset KG load failed: {exc}")
+
     loop = asyncio.get_event_loop()
     loop.run_in_executor(None, _load_workset_bg)
     logger.info("Workset data loading started in background …")
@@ -146,6 +153,14 @@ def create_app() -> FastAPI:
     # Static files (landing page)
     _static = Path(__file__).parent / "static"
     app.mount("/static", StaticFiles(directory=str(_static)), name="static")
+
+    # Embed autonomous agents as a sub-app at /agents
+    try:
+        from app.agents.agent_server import app as agents_app  # noqa: PLC0415
+        app.mount("/agents", agents_app)
+        logger.info("Autonomous agents sub-app mounted at /agents")
+    except Exception as _exc:
+        logger.warning(f"Could not mount agents sub-app: {_exc}")
 
     # Include API routes
     app.include_router(router, prefix="/api/v1")

@@ -89,7 +89,14 @@ def _build_graph() -> Optional[nx.MultiDiGraph]:
                 CAST(ROUND(AVG(block_time), 0) AS INTEGER)              AS avg_block_min,
                 STRING_AGG(DISTINCT aircraft_type, ','
                     ORDER BY aircraft_type)                             AS ac_types,
-                COUNT(*)                                                AS total_ops
+                COUNT(*)                                                AS total_ops,
+                -- Codeshare: collect distinct operating airlines for this marketing airline×route
+                STRING_AGG(DISTINCT operating_airline, ','
+                    ORDER BY operating_airline)                         AS operating_airlines,
+                SUM(CASE WHEN is_codeshare THEN 1 ELSE 0 END)          AS codeshare_ops,
+                -- Marketing airlines that market this operating airline's route
+                STRING_AGG(DISTINCT marketing_airline, ','
+                    ORDER BY marketing_airline)                         AS marketing_airlines
             FROM flights
             WHERE service_type != 'G'
               AND origin      IS NOT NULL
@@ -121,12 +128,24 @@ def _build_graph() -> Optional[nx.MultiDiGraph]:
             )
 
         # ── 3. Add route edges (one per airline per O&D) ──────────────────────
-        for origin, dest, airline, uniq, avg_blk, ac_types_str, ops in rows:
+        codeshare_pairs: Set[tuple] = set()  # (marketing_al, operating_al) pairs
+
+        for origin, dest, airline, uniq, avg_blk, ac_types_str, ops, \
+                op_als_str, cs_ops, mkt_als_str in rows:
             ac_list: List[str] = [
                 a.strip()
                 for a in (ac_types_str or "").split(",")
                 if a.strip()
             ]
+            # Parse operating airlines for this marketing airline × route
+            op_al_list: List[str] = [
+                a.strip() for a in (op_als_str or "").split(",") if a.strip()
+            ]
+            # Determine primary operating carrier: the most common one (first after sort)
+            # If all ops are own-operated, operating = marketing airline
+            primary_op_al = op_al_list[0] if op_al_list else airline
+            is_codeshare_route = _safe_int(cs_ops) > 0 and primary_op_al != airline
+
             G.add_edge(
                 origin, dest,
                 key=airline,
@@ -137,7 +156,21 @@ def _build_graph() -> Optional[nx.MultiDiGraph]:
                 avg_block_min=_safe_int(avg_blk),
                 aircraft_types=ac_list,
                 total_ops=_safe_int(ops),
+                # Codeshare / carrier role properties
+                marketing_airline=airline,
+                operating_airline=primary_op_al,
+                is_codeshare=is_codeshare_route,
+                operating_airlines=op_al_list,
             )
+
+            # Track codeshare pairs: (marketing_carrier, operating_carrier)
+            if is_codeshare_route:
+                for op_al in op_al_list:
+                    if op_al and op_al != airline:
+                        codeshare_pairs.add((airline, op_al))
+
+        # Store codeshare pairs as a graph-level attribute for downstream KG layers
+        G.graph["codeshare_pairs"] = list(codeshare_pairs)
 
         # ── 4. Annotate airport nodes with computed hub metrics ───────────────
         for ap in list(G.nodes()):
@@ -165,9 +198,11 @@ def _build_graph() -> Optional[nx.MultiDiGraph]:
                 "hub_tier":      _hub_tier(dest_count),
             })
 
+        codeshare_count = len(G.graph.get("codeshare_pairs", []))
         logger.info(
             f"Knowledge graph built: {G.number_of_nodes():,} airports, "
-            f"{G.number_of_edges():,} airline-routes"
+            f"{G.number_of_edges():,} airline-routes, "
+            f"{codeshare_count} codeshare pairs"
         )
         return G
 

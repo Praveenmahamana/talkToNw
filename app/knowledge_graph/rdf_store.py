@@ -94,7 +94,7 @@ def _define_ontology(g: "RDFGraph") -> None:
     # ── Classes ──────────────────────────────────────────────────────────────
     for cls in ["Airport", "MegaHub", "MajorHub", "SecondaryHub", "RegionalHub", "PointToPoint",
                 "Airline", "FullServiceCarrier", "LowCostCarrier", "RegionalCarrier", "CharterCarrier",
-                "Alliance", "Route"]:
+                "Alliance", "Route", "CodeshareRoute"]:
         uri = ONT[cls]
         g.add((uri, RDF.type, OWL.Class))
         g.add((uri, RDFS.label, Literal(cls)))
@@ -104,16 +104,20 @@ def _define_ontology(g: "RDFGraph") -> None:
         g.add((ONT[sub], RDFS.subClassOf, ONT.Airport))
     for sub in ["FullServiceCarrier", "LowCostCarrier", "RegionalCarrier", "CharterCarrier"]:
         g.add((ONT[sub], RDFS.subClassOf, ONT.Airline))
+    # CodeshareRoute is a Route where marketing ≠ operating carrier
+    g.add((ONT.CodeshareRoute, RDFS.subClassOf, ONT.Route))
 
     # ── Object properties ────────────────────────────────────────────────────
     for prop, domain, range_ in [
-        ("fromAirport",   "Route",   "Airport"),
-        ("toAirport",     "Route",   "Airport"),
-        ("operatedBy",    "Route",   "Airline"),
-        ("hasRoute",      "Airport", "Route"),
-        ("connectsTo",    "Airport", "Airport"),
-        ("servesAirport", "Airline", "Airport"),
-        ("memberOf",      "Airline", "Alliance"),
+        ("fromAirport",      "Route",   "Airport"),
+        ("toAirport",        "Route",   "Airport"),
+        ("operatedBy",       "Route",   "Airline"),   # physical operator
+        ("marketedBy",       "Route",   "Airline"),   # marketing/selling carrier
+        ("hasRoute",         "Airport", "Route"),
+        ("connectsTo",       "Airport", "Airport"),
+        ("servesAirport",    "Airline", "Airport"),
+        ("memberOf",         "Airline", "Alliance"),
+        ("codeSharesWith",   "Airline", "Airline"),   # marketing ↔ operating carrier link
     ]:
         p = ONT[prop]
         g.add((p, RDF.type, OWL.ObjectProperty))
@@ -122,17 +126,20 @@ def _define_ontology(g: "RDFGraph") -> None:
 
     # ── Datatype properties ──────────────────────────────────────────────────
     for prop, domain, dtype in [
-        ("hubScore",          "Airport", XSD.decimal),
-        ("weeklyFrequency",   "Airport", XSD.integer),
-        ("destinationsServed","Airport", XSD.integer),
-        ("airlinesOperating", "Airport", XSD.integer),
-        ("city",              "Airport", XSD.string),
-        ("country",           "Airport", XSD.string),
-        ("utcOffset",         "Airport", XSD.string),
-        ("carrierType",       "Airline", XSD.string),
-        ("allianceName",      "Alliance",XSD.string),
-        ("weeklyFlights",     "Route",   XSD.integer),
-        ("avgBlockMin",       "Route",   XSD.integer),
+        ("hubScore",           "Airport", XSD.decimal),
+        ("weeklyFrequency",    "Airport", XSD.integer),
+        ("destinationsServed", "Airport", XSD.integer),
+        ("airlinesOperating",  "Airport", XSD.integer),
+        ("city",               "Airport", XSD.string),
+        ("country",            "Airport", XSD.string),
+        ("utcOffset",          "Airport", XSD.string),
+        ("carrierType",        "Airline", XSD.string),
+        ("allianceName",       "Alliance",XSD.string),
+        ("weeklyFlights",      "Route",   XSD.integer),
+        ("avgBlockMin",        "Route",   XSD.integer),
+        ("isCodeshare",        "Route",   XSD.boolean),
+        ("marketingAirline",   "Route",   XSD.string),
+        ("operatingAirline",   "Route",   XSD.string),
     ]:
         p = ONT[prop]
         g.add((p, RDF.type,       OWL.DatatypeProperty))
@@ -211,15 +218,27 @@ def build_rdf_graph() -> Optional["RDFGraph"]:
 
         # ── Route resources (n-ary: origin + dest + airline) ──────────────────
         airports_served: Dict[str, set] = {}  # airline → set of airports
+        codeshare_pairs = nx_graph.graph.get("codeshare_pairs", [])
+
         for origin, dest, data in nx_graph.edges(data=True):
             al = data.get("airline", "")
             if not al:
                 continue
+            is_cs     = bool(data.get("is_codeshare", False))
+            op_al     = data.get("operating_airline", al)
+            mkt_al    = data.get("marketing_airline", al)
+
             route_uri = RT_NS[f"{origin}_{dest}_{al}"]
-            g.add((route_uri, RDF.type,        ONT.Route))
-            g.add((route_uri, ONT.fromAirport, AP_NS[origin]))
-            g.add((route_uri, ONT.toAirport,   AP_NS[dest]))
-            g.add((route_uri, ONT.operatedBy,  AL_NS[al]))
+            route_cls = ONT.CodeshareRoute if is_cs else ONT.Route
+            g.add((route_uri, RDF.type,             route_cls))
+            g.add((route_uri, RDF.type,             ONT.Route))
+            g.add((route_uri, ONT.fromAirport,      AP_NS[origin]))
+            g.add((route_uri, ONT.toAirport,        AP_NS[dest]))
+            g.add((route_uri, ONT.operatedBy,       AL_NS[op_al]))
+            g.add((route_uri, ONT.marketedBy,       AL_NS[mkt_al]))
+            g.add((route_uri, ONT.isCodeshare,      Literal(is_cs, datatype=XSD.boolean)))
+            g.add((route_uri, ONT.marketingAirline, Literal(mkt_al, datatype=XSD.string)))
+            g.add((route_uri, ONT.operatingAirline, Literal(op_al,  datatype=XSD.string)))
             if data.get("unique_flights"):
                 g.add((route_uri, ONT.weeklyFlights, Literal(int(data["unique_flights"]), datatype=XSD.integer)))
             if data.get("avg_block_min"):
@@ -229,11 +248,18 @@ def build_rdf_graph() -> Optional["RDFGraph"]:
             g.add((AP_NS[origin], ONT.hasRoute,   route_uri))
             # Airline serves both airports
             airports_served.setdefault(al, set()).update([origin, dest])
+            if op_al != al:
+                airports_served.setdefault(op_al, set()).update([origin, dest])
 
         for al, aps in airports_served.items():
             al_uri = AL_NS[al]
             for ap in aps:
                 g.add((al_uri, ONT.servesAirport, AP_NS[ap]))
+
+        # ── Codeshare relationships between airlines ──────────────────────────
+        for mkt_al, op_al in codeshare_pairs:
+            g.add((AL_NS[mkt_al], ONT.codeSharesWith, AL_NS[op_al]))
+            g.add((AL_NS[op_al],  ONT.codeSharesWith, AL_NS[mkt_al]))
 
         triple_count = len(g)
         logger.info(f"RDF triple store built: {triple_count:,} triples")
@@ -403,3 +429,34 @@ def query_fsc_vs_lcc(origin: str, dest: str) -> Dict[str, List[str]]:
     fsc = [r["al_code"] for r in rows if "Full" in str(r.get("ctype", ""))]
     lcc = [r["al_code"] for r in rows if "Low" in str(r.get("ctype", ""))]
     return {"fsc": fsc, "lcc": lcc, "all": [r["al_code"] for r in rows]}
+
+
+def query_codeshare_partners(airline: str) -> List[Dict[str, Any]]:
+    """Return airlines that codeshare with the given airline (bidirectional)."""
+    return sparql_query(PREFIXES + f"""
+        SELECT DISTINCT ?partner_code WHERE {{
+            {{
+                al:{airline} ont:codeSharesWith ?partner .
+            }} UNION {{
+                ?partner ont:codeSharesWith al:{airline} .
+            }}
+            BIND(STRAFTER(STR(?partner), "airline/") AS ?partner_code)
+            FILTER(?partner_code != "{airline}")
+        }} ORDER BY ?partner_code
+    """)
+
+
+def query_codeshare_routes(airline: str) -> List[Dict[str, Any]]:
+    """Return all codeshare routes where this airline is the marketing or operating carrier."""
+    return sparql_query(PREFIXES + f"""
+        SELECT ?origin ?dest ?mkt ?op WHERE {{
+            ?r a ont:CodeshareRoute ;
+               ont:fromAirport    ?orig_ap ;
+               ont:toAirport      ?dest_ap ;
+               ont:marketingAirline ?mkt ;
+               ont:operatingAirline ?op .
+            BIND(STRAFTER(STR(?orig_ap), "airport/") AS ?origin)
+            BIND(STRAFTER(STR(?dest_ap), "airport/") AS ?dest)
+            FILTER(?mkt = "{airline}" || ?op = "{airline}")
+        }} ORDER BY ?origin ?dest LIMIT 50
+    """)

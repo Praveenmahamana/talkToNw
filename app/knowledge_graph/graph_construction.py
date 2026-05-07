@@ -67,6 +67,39 @@ def build_all(force_rebuild: bool = False) -> Dict[str, Any]:
         logger.error(f"KG layer [NetworkX] exception: {exc}")
         return summary
 
+    # ── Layer 1.5: Entity enrichment (LM-powered) — run before RDF/Kuzu ───────
+    # Eagerly builds the entity taxonomy (carrier + airport LLM enrichment) and
+    # writes the airport strategic_role / description back onto NetworkX nodes so
+    # that the RDF and Kuzu layers automatically pick up the enriched attributes.
+    t0 = time.time()
+    try:
+        from app.knowledge_graph.entity_enrichment import build_entity_taxonomy
+        G = get_graph()
+        if G is not None:
+            taxonomy = build_entity_taxonomy(G)
+            ap_enrichment = taxonomy.get("airport_enrichment", {}).get("airports", {})
+            for ap_code, ap_data in ap_enrichment.items():
+                if ap_code in G.nodes:
+                    G.nodes[ap_code]["strategic_role"] = ap_data.get("strategic_role", "")
+                    G.nodes[ap_code]["description"]    = ap_data.get("description", "")
+            elapsed = round(time.time() - t0, 2)
+            n_enriched = len(ap_enrichment)
+            n_carriers = len(taxonomy.get("carrier_nodes", []))
+            summary["entity_enrichment"] = {
+                "ok": True, "time_s": elapsed,
+                "airports_enriched": n_enriched,
+                "carriers_enriched": n_carriers,
+            }
+            logger.info(
+                f"KG layer [EntityEnrichment] ready in {elapsed}s — "
+                f"{n_carriers} carriers, {n_enriched} airports LM-enriched"
+            )
+        else:
+            summary["entity_enrichment"] = {"ok": False, "error": "NetworkX graph not available"}
+    except Exception as exc:
+        summary["entity_enrichment"] = {"ok": False, "error": str(exc)}
+        logger.warning(f"KG layer [EntityEnrichment] exception: {exc}")
+
     # ── Layer 2: RDFLib triple store ──────────────────────────────────────────
     t0 = time.time()
     try:
@@ -153,15 +186,22 @@ def get_build_status() -> Dict[str, Any]:
     from app.knowledge_graph.rdf_store import is_rdf_ready, get_rdf_graph
     from app.knowledge_graph.kuzu_store import is_kuzu_ready
     from app.knowledge_graph.graph_analytics import is_analytics_ready, get_analytics_cache
+    from app.knowledge_graph.entity_enrichment import _entity_cache
 
     G = get_graph()
     rdf_g = get_rdf_graph()
     analytics = get_analytics_cache()
+    taxonomy  = _entity_cache or {}
     return {
         "networkx": {
             "ready":    nx_ready(),
             "airports": G.number_of_nodes() if G else 0,
             "routes":   G.number_of_edges() if G else 0,
+        },
+        "entity_enrichment": {
+            "ready":             taxonomy != {},
+            "carriers_enriched": len(taxonomy.get("carrier_nodes", [])),
+            "airports_enriched": len(taxonomy.get("airport_enrichment", {}).get("airports", {})),
         },
         "rdf": {
             "ready":   is_rdf_ready(),

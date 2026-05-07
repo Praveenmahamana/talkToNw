@@ -1,0 +1,9 @@
+2026-04-30 12:17:11.997 | INFO     | app.ai.vertex_client:<module>:35 - Loaded .env from C:\Users\SG0705233\OneDrive - Sabre\Desktop\projects\scheduleAI\airline_schedule_app\.env
+C:\Users\SG0705233\AppData\Roaming\Python\Python311\site-packages\requests\__init__.py:109: RequestsDependencyWarning: urllib3 (2.6.3) or chardet (7.4.3)/charset_normalizer (3.4.4) doesn't match a supported version!
+  warnings.warn(
+INFO:     Started server process [4720]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8001 (Press CTRL+C to quit)
+C:\Users\SG0705233\OneDrive - Sabre\Desktop\projects\scheduleAI\airline_schedule_app\app\knowledge_graph\workset_graph_builder.py:440: FutureWarning: The behavior of DataFrame concatenation with empty or all-NA entries is deprecated. In a future version, this will no longer exclude empty or all-NA columns when determining the result dtypes. To retain the old behavior, exclude the relevant entries before the concat operation.
+  return pd.concat([structural, has_itin, uses_leg, flow_df], ignore_index=True)

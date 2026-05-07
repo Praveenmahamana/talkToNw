@@ -96,10 +96,17 @@ def _make_edge(src: str, tgt: str, data: Dict[str, Any]) -> Dict[str, Any]:
 
 @router.get("/status")
 async def graph_status():
-    """Return readiness status of all KG layers."""
+    """Return readiness status of all KG layers (schedule + workset demand)."""
     try:
         from app.knowledge_graph.graph_construction import get_build_status
-        return get_build_status()
+        status = get_build_status()
+        # Merge workset KG (BASEDATA/SPILLDATA OD→Leg spec) status as an additional layer
+        try:
+            from app.knowledge_graph.workset_graph_builder import get_status as wkg_status
+            status["workset_kg"] = wkg_status()
+        except Exception as exc:
+            status["workset_kg"] = {"ready": False, "error": str(exc)}
+        return status
     except Exception as exc:
         return JSONResponse(status_code=500, content={"error": str(exc)})
 
@@ -552,16 +559,103 @@ async def graph_overview(
             "partial": False,
         }
 
+    # ── Workset KG augmentation — OD→Leg spec (BASEDATA + SPILLDATA) ─────────
+    # Merges MARKET nodes + FLOW_THROUGH/MARKET_FLOW edges into the brain graph
+    # so the visualization is consistent with the domain KG definition.
+    workset_market_count = 0
+    workset_flow_count   = 0
+    try:
+        from app.knowledge_graph import workset_graph_builder as wkg
+        if wkg.is_ready():
+            ge_df = wkg.get_graph_edges()
+            ms_df = wkg.get_market_summary()
+            gn_df = wkg.get_graph_nodes()
+
+            if ge_df is not None and not ge_df.empty:
+                # 1. FLOW_THROUGH + MARKET_FLOW edges between airports already in brain graph
+                flow_types = {"FLOW_THROUGH", "MARKET_FLOW"}
+                flow_rows = ge_df[
+                    ge_df["edge_type"].isin(flow_types)
+                    & ge_df["source"].isin(top_codes)
+                    & ge_df["target"].isin(top_codes)
+                ]
+                # Aggregate traffic per (source, target, edge_type) to collapse duplicates
+                if not flow_rows.empty:
+                    agg = (
+                        flow_rows.groupby(["source", "target", "edge_type"], as_index=False)
+                        .agg(traffic=("traffic", "sum"), market_od=("market_od", "first"))
+                    )
+                    traffic_max = float(agg["traffic"].max()) if len(agg) else 1.0
+                    for _, row in agg.iterrows():
+                        rel = row["edge_type"].lower()  # flow_through | market_flow
+                        w   = max(0.5, min(5.0, 0.5 + 4.5 * float(row["traffic"]) / max(traffic_max, 1)))
+                        edges.append({"data": {
+                            "id":        f"wkg-{row['source']}-{row['target']}-{rel}",
+                            "source":    row["source"],
+                            "target":    row["target"],
+                            "relation":  rel,
+                            "market_od": str(row["market_od"]) if row["market_od"] else "",
+                            "traffic":   round(float(row["traffic"]), 1),
+                            "weight":    round(w, 2),
+                        }})
+                    workset_flow_count = len(agg)
+
+            if ms_df is not None and not ms_df.empty and gn_df is not None:
+                # 2. MARKET nodes whose origin+destin are both in the brain graph
+                # Parse market_od column (format "AAA->BBB") to get origin/destin
+                ms = ms_df.copy()
+                ms[["m_orig", "m_dest"]] = ms["market_od"].str.split("->", expand=True)
+                visible = ms[
+                    ms["m_orig"].isin(top_codes) & ms["m_dest"].isin(top_codes)
+                ].nlargest(50, "total_traffic")
+
+                for _, row in visible.iterrows():
+                    mkt_id = f"MKT_{row['m_orig']}_{row['m_dest']}"
+                    nodes.append({"data": {
+                        "id":           mkt_id,
+                        "label":        row["market_od"],
+                        "entity_type":  "Market",
+                        "market_od":    row["market_od"],
+                        "total_traffic": round(float(row["total_traffic"]), 1),
+                        "itin_count":   int(row.get("itinerary_count", 0)),
+                        "local_itin":   int(row.get("local_itin_count", 0)),
+                        "flow_itin":    int(row.get("flow_itin_count", 0)),
+                    }})
+                    # MARKET_FLOW edges to origin/destin airports
+                    traf = float(row["total_traffic"])
+                    edges.append({"data": {
+                        "id":        f"wkg-mkt-orig-{mkt_id}",
+                        "source":    row["m_orig"],
+                        "target":    mkt_id,
+                        "relation":  "market_flow",
+                        "weight":    1.0,
+                        "traffic":   traf,
+                    }})
+                    edges.append({"data": {
+                        "id":        f"wkg-mkt-dest-{mkt_id}",
+                        "source":    mkt_id,
+                        "target":    row["m_dest"],
+                        "relation":  "market_flow",
+                        "weight":    1.0,
+                        "traffic":   traf,
+                    }})
+                workset_market_count = len(visible)
+
+    except Exception as exc:
+        logger.warning(f"Workset KG augmentation failed (continuing without): {exc}")
+
     return {
         "elements": {"nodes": nodes, "edges": edges},
         "entity_colors":   ENTITY_COLORS,
         "relation_colors": RELATION_COLORS,
         "stats": {
-            "nodes":          len(nodes),
-            "edges":          len(edges),
-            "airport_count":  len(top_codes),
-            "carrier_count":  carrier_count,
-            "aircraft_count": aircraft_count,
+            "nodes":                len(nodes),
+            "edges":                len(edges),
+            "airport_count":        len(top_codes),
+            "carrier_count":        carrier_count,
+            "aircraft_count":       aircraft_count,
+            "workset_market_count": workset_market_count,
+            "workset_flow_edges":   workset_flow_count,
             **stats_extra,
         },
     }
@@ -613,3 +707,233 @@ async def build_events():
         "Cache-Control": "no-cache",
         "X-Accel-Buffering": "no",
     })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Workset KG — OD→Leg Contribution Matrix + Flow Edges  ⚡
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/workset/status")
+async def workset_graph_status():
+    """
+    Return build status for the workset knowledge graph
+    (LEG / MARKET / ITINERARY nodes + FLOW edges).
+    """
+    try:
+        from app.knowledge_graph.workset_graph_builder import get_status
+        return get_status()
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": str(exc)})
+
+
+@router.get("/workset/build")
+async def workset_graph_build(force: bool = Query(False, description="Force rebuild")):
+    """Trigger (or re-trigger) the workset KG build in the background."""
+    import asyncio
+    from app.knowledge_graph.workset_graph_builder import init_workset_graph, get_status
+
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, lambda: init_workset_graph(force=force))
+    return {"message": "Workset graph build triggered", "force": force}
+
+
+@router.get("/workset/flow")
+async def workset_od_flow(
+    origin: str = Query(..., description="Market origin airport, e.g. DXB"),
+    destin: str = Query(..., description="Market destination airport, e.g. BOM"),
+):
+    """
+    Return all itineraries + FLOW_THROUGH / FLOW_TO edges for a market OD.
+
+    Per spec:
+      Market OD AAA→BBB via AAA→CCC→BBB with 120 pax →
+        AAA ⚡ CCC  FLOW_THROUGH  traffic=120
+        CCC ⚡ BBB  FLOW_THROUGH  traffic=120
+        AAA ⚡ BBB  MARKET_FLOW   total_traffic=120
+    """
+    from app.knowledge_graph.workset_graph_builder import get_od_flow_detail, is_ready
+    if not is_ready():
+        return JSONResponse(status_code=503, content={
+            "error": "Workset graph not ready. Call /graph/workset/build first.",
+            "ready": False,
+        })
+    return get_od_flow_detail(origin, destin)
+
+
+@router.get("/workset/leg-flow")
+async def workset_leg_flow(
+    base_index: int = Query(..., description="BASEDATA leg identifier (baseIndex / record_id)"),
+):
+    """
+    Return all market ODs that contribute pax to a specific leg (by baseIndex).
+    Shows local vs flow breakdown and top contributing markets.
+    """
+    from app.knowledge_graph.workset_graph_builder import get_leg_flow_detail, is_ready
+    if not is_ready():
+        return JSONResponse(status_code=503, content={
+            "error": "Workset graph not ready.",
+            "ready": False,
+        })
+    return get_leg_flow_detail(base_index)
+
+
+@router.get("/workset/od-leg-matrix")
+async def workset_od_leg_matrix(
+    origin: str = Query("", description="Filter by market origin (optional)"),
+    destin: str = Query("", description="Filter by market destination (optional)"),
+    limit:  int = Query(500, ge=1, le=5000, description="Max rows to return"),
+):
+    """
+    Return the OD→Leg Contribution Matrix (or a filtered slice).
+    Columns: market_od, route, itin_type, leg_seq, baseIndex, leg_od, flt_num, traffic.
+    """
+    from app.knowledge_graph.workset_graph_builder import get_od_leg_contribution_matrix, is_ready
+    if not is_ready():
+        return JSONResponse(status_code=503, content={"error": "Workset graph not ready."})
+
+    df = get_od_leg_contribution_matrix()
+    if df is None or df.empty:
+        return {"rows": [], "total": 0}
+
+    if origin:
+        df = df[df["market_origin"] == origin.upper()]
+    if destin:
+        df = df[df["market_destin"] == destin.upper()]
+
+    cols = ["market_od", "route", "itin_type", "leg_seq", "baseIndex", "leg_od", "flt_num", "traffic"]
+    available = [c for c in cols if c in df.columns]
+    subset = df[available].head(limit)
+
+    import math as _math
+    rows = []
+    for rec in subset.to_dict("records"):
+        clean = {k: (None if isinstance(v, float) and (_math.isnan(v) or _math.isinf(v)) else v)
+                 for k, v in rec.items()}
+        rows.append(clean)
+
+    return {"rows": rows, "total": len(df)}
+
+
+@router.get("/workset/market-summary")
+async def workset_market_summary(
+    limit: int = Query(100, ge=1, le=2000, description="Max markets to return"),
+    sort_by: str = Query("total_traffic", description="Sort column"),
+):
+    """Return the market_summary table (total traffic, demand, itinerary counts per OD)."""
+    from app.knowledge_graph.workset_graph_builder import get_market_summary, is_ready
+    if not is_ready():
+        return JSONResponse(status_code=503, content={"error": "Workset graph not ready."})
+
+    df = get_market_summary()
+    if df is None or df.empty:
+        return {"rows": [], "total": 0}
+
+    if sort_by in df.columns:
+        df = df.sort_values(sort_by, ascending=False)
+
+    import math as _math
+    rows = []
+    for rec in df.head(limit).to_dict("records"):
+        clean = {k: (None if isinstance(v, float) and (_math.isnan(v) or _math.isinf(v)) else v)
+                 for k, v in rec.items()}
+        rows.append(clean)
+    return {"rows": rows, "total": len(df)}
+
+
+@router.get("/workset/leg-flow-summary")
+async def workset_leg_flow_summary(
+    limit: int = Query(200, ge=1, le=2000),
+):
+    """Return the leg_flow_summary table (total OD contribution per leg)."""
+    from app.knowledge_graph.workset_graph_builder import get_leg_flow_summary, is_ready
+    if not is_ready():
+        return JSONResponse(status_code=503, content={"error": "Workset graph not ready."})
+
+    df = get_leg_flow_summary()
+    if df is None or df.empty:
+        return {"rows": [], "total": 0}
+
+    df = df.sort_values("total_od_contribution", ascending=False)
+    import math as _math
+    rows = []
+    for rec in df.head(limit).to_dict("records"):
+        clean = {k: (None if isinstance(v, float) and (_math.isnan(v) or _math.isinf(v)) else v)
+                 for k, v in rec.items()}
+        rows.append(clean)
+    return {"rows": rows, "total": len(df)}
+
+
+@router.get("/workset/board-deboard")
+async def workset_board_deboard(
+    station: str = Query("", description="Filter by station (optional)"),
+):
+    """Return the airport boarding/deboarding/connecting summary."""
+    from app.knowledge_graph.workset_graph_builder import get_airport_board_deboard_summary, is_ready
+    if not is_ready():
+        return JSONResponse(status_code=503, content={"error": "Workset graph not ready."})
+
+    df = get_airport_board_deboard_summary()
+    if df is None or df.empty:
+        return {"rows": [], "total": 0}
+
+    if station:
+        df = df[df["station"] == station.upper()]
+
+    df = df.sort_values("boarded", ascending=False)
+    import math as _math
+    rows = []
+    for rec in df.to_dict("records"):
+        clean = {k: (None if isinstance(v, float) and (_math.isnan(v) or _math.isinf(v)) else v)
+                 for k, v in rec.items()}
+        rows.append(clean)
+    return {"rows": rows, "total": len(df)}
+
+
+@router.get("/workset/graph-nodes")
+async def workset_graph_nodes(
+    node_type: str = Query("", description="Filter: AIRPORT | LEG | MARKET | ITINERARY"),
+    limit: int     = Query(500, ge=1, le=5000),
+):
+    """Return graph nodes (all 4 types: AIRPORT, LEG, MARKET, ITINERARY)."""
+    from app.knowledge_graph.workset_graph_builder import get_graph_nodes, is_ready
+    if not is_ready():
+        return JSONResponse(status_code=503, content={"error": "Workset graph not ready."})
+
+    df = get_graph_nodes()
+    if df is None or df.empty:
+        return {"rows": [], "total": 0}
+
+    if node_type:
+        df = df[df["node_type"] == node_type.upper()]
+
+    rows = df.head(limit)[["node_id", "node_type", "label"]].to_dict("records")
+    return {"rows": rows, "total": len(df)}
+
+
+@router.get("/workset/graph-edges")
+async def workset_graph_edges(
+    edge_type:  str = Query("", description="Filter: FLOW_THROUGH | FLOW_TO | MARKET_FLOW | USES_LEG | HAS_ITINERARY | DEPARTS_ON | ARRIVES_AT"),
+    market_od:  str = Query("", description="Filter by market OD, e.g. DXB->BOM"),
+    limit:      int = Query(500, ge=1, le=5000),
+):
+    """Return graph edges. Filter by edge_type and/or market_od."""
+    from app.knowledge_graph.workset_graph_builder import get_graph_edges, is_ready
+    if not is_ready():
+        return JSONResponse(status_code=503, content={"error": "Workset graph not ready."})
+
+    df = get_graph_edges()
+    if df is None or df.empty:
+        return {"rows": [], "total": 0}
+
+    if edge_type:
+        df = df[df["edge_type"] == edge_type.upper()]
+    if market_od:
+        df = df[df["market_od"] == market_od]
+
+    import math as _math
+    rows = []
+    for rec in df.head(limit).to_dict("records"):
+        clean = {k: (None if isinstance(v, float) and (_math.isnan(v) or _math.isinf(v)) else v)
+                 for k, v in rec.items()}
+        rows.append(clean)
+    return {"rows": rows, "total": len(df)}

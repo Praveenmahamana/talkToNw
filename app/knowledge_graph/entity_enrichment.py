@@ -21,16 +21,22 @@ from loguru import logger
 
 # ── Entity type → visual color (matches kg-viz reference NODE_COLORS) ─────────
 ENTITY_COLORS: Dict[str, str] = {
+    # Schedule / topology layer
     "Airport":      "#38bdf8",   # sky blue
     "Carrier":      "#f472b6",   # hot pink
     "AircraftType": "#a78bfa",   # violet
     "Alliance":     "#60a5fa",   # blue
     "Route":        "#34d399",   # emerald
+    # Workset / demand layer (BASEDATA + SPILLDATA — OD→Leg spec)
+    "Leg":          "#009dae",   # Spark teal  (physical flight leg)
+    "Market":       "#fbbf24",   # amber       (OD market pair)
+    "Itinerary":    "#fb923c",   # orange      (market itinerary path)
     "Unknown":      "#cbd5e1",   # light grey
 }
 
 # ── Relation type → visual color (matches kg-viz reference EDGE_COLORS) ───────
 RELATION_COLORS: Dict[str, str] = {
+    # Schedule / topology layer
     "connects":        "#4ade80",   # lime green  (airport ↔ airport)
     "hubs_at":         "#fb923c",   # orange      (carrier → airport hub)
     "served_by":       "#60a5fa",   # blue        (airport ← carrier)
@@ -38,6 +44,13 @@ RELATION_COLORS: Dict[str, str] = {
     "uses_aircraft":   "#a78bfa",   # violet      (carrier → aircraft type)
     "codeshares_with": "#fbbf24",   # amber       (carrier ↔ carrier)
     "member_of":       "#e879f9",   # fuchsia     (carrier → alliance)
+    # Workset / demand layer (OD→Leg Contribution Matrix spec)
+    "flow_through":    "#22d3ee",   # cyan ⚡      (pax flow through intermediate airport)
+    "market_flow":     "#f59e0b",   # amber-gold  (total market OD demand)
+    "uses_leg":        "#009dae",   # Spark teal  (itinerary → physical leg)
+    "has_itinerary":   "#5eead4",   # teal-light  (market → itinerary)
+    "departs_on":      "#67e8f9",   # ice blue    (airport → leg departure)
+    "arrives_at":      "#a5f3fc",   # pale cyan   (leg → airport arrival)
     "default":         "#94a3b8",   # slate
 }
 
@@ -187,6 +200,49 @@ def _derive_aircraft_entities(
     return aircraft_nodes, aircraft_edges
 
 
+def _lm_enrich_airports(top_airports: List[Dict]) -> Dict[str, Any]:
+    """
+    Use Gemini to classify top hub airports by strategic role and add a short
+    description. Degrades gracefully to empty dict on any error.
+
+    Expected return shape:
+      {"airports": {"DXB": {"strategic_role": "Gateway", "description": "Gulf mega-hub"}}}
+    """
+    from app.ai.vertex_client import generate_content, extract_text, VERTEX_AVAILABLE
+
+    if not VERTEX_AVAILABLE or not top_airports:
+        return {}
+
+    lines = []
+    for ap in top_airports[:20]:
+        lines.append(
+            f"- {ap['code']} ({ap['city']}, {ap['country']}): "
+            f"tier={ap['hub_tier']}, destinations={ap['dest_count']}, "
+            f"airlines={ap['airline_count']}, weekly_freq={ap['out_freq']}"
+        )
+
+    prompt = (
+        "You are an airline industry expert. Classify these airports by strategic role.\n"
+        "Airports:\n" + "\n".join(lines) + "\n\n"
+        "Return ONLY valid JSON with this exact structure (no markdown):\n"
+        '{"airports":{"<IATA>":{"strategic_role":"Gateway|Hub|Leisure|Business|Transit|Regional",'
+        '"description":"3-5 word label"}}}'
+    )
+
+    try:
+        resp = generate_content(
+            contents=[{"role": "user", "parts": [{"text": prompt}]}],
+            temperature=0.0,
+        )
+        text = extract_text(resp)
+        m = re.search(r'\{.*\}', text, re.DOTALL)
+        if m:
+            return json.loads(m.group())
+    except Exception as exc:
+        logger.warning(f"LM airport enrichment failed: {exc}")
+    return {}
+
+
 def _lm_enrich_carriers(carrier_nodes: List[Dict]) -> Dict[str, Any]:
     """
     Use Gemini to classify carrier types (FSC/LCC/ULCC/Regional/Cargo)
@@ -238,13 +294,14 @@ def build_entity_taxonomy(G) -> Dict[str, Any]:
     Results are cached after the first call.
 
     Returns:
-        carrier_nodes  : list of Carrier node dicts
-        aircraft_nodes : list of AircraftType node dicts
-        carrier_edges  : list of hubs_at edge dicts
-        aircraft_edges : list of uses_aircraft edge dicts
-        lm_enrichment  : Gemini-enriched carrier metadata (may be {})
-        entity_colors  : color map by entity_type
-        relation_colors: color map by relation type
+        carrier_nodes     : list of Carrier node dicts
+        aircraft_nodes    : list of AircraftType node dicts
+        carrier_edges     : list of hubs_at edge dicts
+        aircraft_edges    : list of uses_aircraft edge dicts
+        lm_enrichment     : Gemini-enriched carrier metadata (may be {})
+        airport_enrichment: Gemini-enriched airport metadata (may be {})
+        entity_colors     : color map by entity_type
+        relation_colors   : color map by relation type
     """
     global _entity_cache
 
@@ -256,6 +313,7 @@ def build_entity_taxonomy(G) -> Dict[str, Any]:
             return _entity_cache
 
         logger.info("Building KG entity taxonomy…")
+        from app.services.workset_service import AIRPORT_INFO
 
         carrier_nodes, carrier_edges = _derive_carrier_entities(G)
         carrier_node_ids = {c["id"] for c in carrier_nodes}
@@ -264,14 +322,14 @@ def build_entity_taxonomy(G) -> Dict[str, Any]:
             G, carrier_node_ids
         )
 
-        # LM enrichment (non-blocking fallback)
+        # ── LM: carrier enrichment ─────────────────────────────────────────
         lm_data: Dict[str, Any] = {}
         try:
             lm_data = _lm_enrich_carriers(carrier_nodes)
         except Exception as exc:
-            logger.warning(f"LM enrichment skipped: {exc}")
+            logger.warning(f"LM carrier enrichment skipped: {exc}")
 
-        # Apply LM enrichment to carrier nodes in-place
+        # Apply LM carrier enrichment to carrier nodes in-place
         lm_carriers = lm_data.get("carriers", {})
         for cn in carrier_nodes:
             code = cn["label"]
@@ -281,20 +339,46 @@ def build_entity_taxonomy(G) -> Dict[str, Any]:
                 cn["alliance"]        = info.get("alliance", "None")
                 cn["description"]     = info.get("description", "")
 
+        # ── LM: airport enrichment (top 20 hubs by hub_score) ─────────────
+        lm_airports: Dict[str, Any] = {}
+        try:
+            top_aps = sorted(
+                G.nodes(data=True),
+                key=lambda x: x[1].get("hub_score", 0.0),
+                reverse=True,
+            )[:20]
+            ap_input = [
+                {
+                    "code":          ap,
+                    "city":          AIRPORT_INFO.get(ap, {}).get("city", ap),
+                    "country":       AIRPORT_INFO.get(ap, {}).get("country", ""),
+                    "hub_tier":      data.get("hub_tier", "unknown"),
+                    "dest_count":    data.get("dest_count", 0),
+                    "airline_count": data.get("airline_count", 0),
+                    "out_freq":      data.get("out_freq", 0),
+                }
+                for ap, data in top_aps
+            ]
+            lm_airports = _lm_enrich_airports(ap_input)
+        except Exception as exc:
+            logger.warning(f"LM airport enrichment skipped: {exc}")
+
         _entity_cache = {
-            "carrier_nodes":   carrier_nodes,
-            "aircraft_nodes":  aircraft_nodes,
-            "carrier_edges":   carrier_edges,
-            "aircraft_edges":  aircraft_edges,
-            "lm_enrichment":   lm_data,
-            "entity_colors":   ENTITY_COLORS,
-            "relation_colors": RELATION_COLORS,
+            "carrier_nodes":      carrier_nodes,
+            "aircraft_nodes":     aircraft_nodes,
+            "carrier_edges":      carrier_edges,
+            "aircraft_edges":     aircraft_edges,
+            "lm_enrichment":      lm_data,
+            "airport_enrichment": lm_airports,
+            "entity_colors":      ENTITY_COLORS,
+            "relation_colors":    RELATION_COLORS,
         }
 
         logger.info(
             f"Entity taxonomy ready: {len(carrier_nodes)} carriers, "
             f"{len(aircraft_nodes)} aircraft types, "
-            f"{len(carrier_edges) + len(aircraft_edges)} typed edges"
+            f"{len(carrier_edges) + len(aircraft_edges)} typed edges, "
+            f"{len(lm_airports.get('airports', {}))} airports LM-enriched"
         )
         return _entity_cache
 

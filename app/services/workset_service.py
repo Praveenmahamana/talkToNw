@@ -311,7 +311,13 @@ def _load_spill_data(conn, path: Path):
             conn.execute("DROP TABLE workset_spill")
             logger.info("workset_spill missing fare columns — dropping for schema upgrade reload")
         else:
-            return
+            n = conn.execute("SELECT COUNT(*) FROM workset_spill").fetchone()[0]
+            if n > 0:
+                logger.info(f"  workset_spill: already loaded ({n:,} rows) — skipping reload")
+                return
+            # Table exists but empty — drop and reload
+            conn.execute("DROP TABLE IF EXISTS workset_spill")
+            logger.warning("workset_spill was empty — dropping and reloading from SPILLDATA.dat")
     logger.info("Loading SPILLDATA (this may take ~30 s) …")
     # 35 comma-separated fields, no header — market/itinerary level
     # Each row = ONE ITINERARY option for a market (true O&D pair)
@@ -406,7 +412,13 @@ def _load_base_data(conn, path: Path):
         logger.warning(f"BASEDATA.dat not found at {path}")
         return
     if _table_exists(conn, "workset_base"):
-        return
+        n = conn.execute("SELECT COUNT(*) FROM workset_base").fetchone()[0]
+        if n > 0:
+            logger.info(f"  workset_base: already loaded ({n:,} rows) — skipping reload")
+            return
+        # Table exists but empty (crashed mid-load) — drop and reload
+        conn.execute("DROP TABLE IF EXISTS workset_base")
+        logger.warning("workset_base was empty — dropping and reloading from BASEDATA.dat")
     logger.info("Loading BASEDATA (this may take ~15 s) …")
     # 24 comma-separated fields, no header — verified against WORKSET204 and filesColumnsSegmsPM.yaml
     # col[0]  = record_id   (baseIndex — unique leg identifier)
@@ -489,6 +501,31 @@ def init_workset():
         _load_dashboard_outputs(conn, wd / "dashboard_output")
         _WORKSET_LOADED = True
         logger.info("Workset reference data ready.")
+
+        # Build the workset knowledge graph (LEG/MARKET/ITINERARY nodes + flow edges).
+        # Read the DataFrames HERE in the main thread (DuckDB is not thread-safe).
+        # The background thread receives already-loaded DataFrames and never touches DuckDB.
+        import threading
+        from app.knowledge_graph.workset_graph_builder import (
+            init_workset_graph,
+            _load_basedata as _wkg_load_base,
+            _load_spilldata as _wkg_load_spill,
+        )
+        basedata_df  = _wkg_load_base()
+        spilldata_df = _wkg_load_spill()
+        logger.info(
+            f"Workset KG DataFrames pre-loaded: "
+            f"{len(basedata_df):,} base legs, {len(spilldata_df):,} spill rows"
+        )
+        t = threading.Thread(
+            target=init_workset_graph,
+            kwargs={"basedata": basedata_df, "spilldata": spilldata_df},
+            name="workset-kg-build",
+            daemon=True,
+        )
+        t.start()
+        logger.info("Workset KG build started in background thread.")
+
     except Exception as exc:
         logger.error(f"Workset init failed: {exc}")
         # Drop any partial tables so next call can retry cleanly
@@ -497,7 +534,6 @@ def init_workset():
                 conn.execute(f"DROP TABLE IF EXISTS {tbl}")
             except Exception:
                 pass
-
 
 def is_loaded() -> bool:
     return _WORKSET_LOADED

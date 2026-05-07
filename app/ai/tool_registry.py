@@ -486,6 +486,52 @@ TOOL_DEFINITIONS = [
             "required": ["query"],
         },
     },
+    {
+        "name": "kg_query",
+        "description": (
+            "Query the pre-built Workset Knowledge Graph (KG) for RM-scenario traffic data, "
+            "flow passenger itineraries, connecting hub analysis, and leg-level network data. "
+            "The workset KG is richer than the schedule database — it contains:\n"
+            "  • 4 RM traffic scenarios per market: HO (Host-Optimistic), LO, HR (Host-Realistic), LR "
+            "    — each has demand, traffic, and spill so you can compare optimistic vs realistic forecasts.\n"
+            "  • FLOW itineraries: actual passenger routings through connection hubs "
+            "    (e.g. MRU→DXB→LHR — traffic, stops, itinerary type).\n"
+            "  • Connecting hub airports for any O&D pair.\n"
+            "  • LEG-level flight data (carrier, traffic, distance) from the workset.\n"
+            "  • Full SQL access to the KG DuckDB (tables: nodes, edges, metadata).\n"
+            "Query types:\n"
+            "  • type='market_flow'         → 4-scenario demand/traffic/spill for an O&D market\n"
+            "  • type='flow_itineraries'    → all flow routings for an O&D (sorted by traffic)\n"
+            "  • type='connecting_airports' → airports that connect origin→dest via flow itineraries\n"
+            "  • type='legs'               → flight legs between two airports with traffic\n"
+            "  • type='carrier_network'    → all KG leg IDs operated by a carrier\n"
+            "  • type='kg_sql'             → run a SELECT query on kg.duckdb "
+            "    (tables: nodes[id,node_type,…props], edges[source,target,rel,…props], metadata)\n"
+            "Use this when the user asks about traffic scenarios, spill/recapture, RM forecasts, "
+            "flow passengers, workset-level analysis, or connecting routing through hubs."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "type": {
+                    "type": "string",
+                    "description": "Query type: 'market_flow' | 'flow_itineraries' | 'connecting_airports' | 'legs' | 'carrier_network' | 'kg_sql'",
+                },
+                "origin":      {"type": "string", "description": "IATA origin airport for OD queries, e.g. DXB"},
+                "destination": {"type": "string", "description": "IATA destination airport for OD queries, e.g. LHR"},
+                "carrier":     {"type": "string", "description": "2-letter IATA carrier code for carrier_network, e.g. EK"},
+                "sql": {
+                    "type": "string",
+                    "description": (
+                        "SELECT query to run against kg.duckdb (for kg_sql type). "
+                        "Tables: nodes (id, node_type, + props), edges (source, target, rel, + props), metadata (key, value). "
+                        "Example: SELECT id, node_type, market_od FROM nodes WHERE node_type='ITINERARY' LIMIT 20"
+                    ),
+                },
+            },
+            "required": ["type"],
+        },
+    },
 ]
 
 
@@ -951,6 +997,101 @@ def execute_tool(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
                 logger.debug(f"KG enrichment skipped for get_airport_overview: {_kg_exc}")
 
             return {"tool": tool_name, **result}
+
+        elif tool_name == "kg_query":
+            from app.knowledge_graph.workset_kg_loader import (
+                is_workset_kg_ready, get_market_flow, get_flow_itineraries,
+                connecting_airports as _connecting_airports,
+                get_legs_between, get_carrier_legs, get_workset_db,
+            )
+            qt = (args.get("type") or "").lower().strip()
+            if not is_workset_kg_ready():
+                return {
+                    "tool": tool_name,
+                    "error": "Workset KG is still loading. Try again in a few seconds.",
+                }
+
+            if qt == "market_flow":
+                orig = (args.get("origin") or "").upper().strip()
+                dest = (args.get("destination") or "").upper().strip()
+                if not orig or not dest:
+                    return {"tool": tool_name, "error": "origin and destination are required for market_flow."}
+                flow = get_market_flow(orig, dest)
+                if not flow:
+                    return {
+                        "tool": tool_name, "origin": orig, "destination": dest,
+                        "found": False,
+                        "note": f"No FLOW_TO edge found for {orig}→{dest} in the workset KG.",
+                    }
+                return {"tool": tool_name, "origin": orig, "destination": dest, "found": True, **flow}
+
+            elif qt == "flow_itineraries":
+                orig = (args.get("origin") or "").upper().strip()
+                dest = (args.get("destination") or "").upper().strip()
+                if not orig or not dest:
+                    return {"tool": tool_name, "error": "origin and destination are required for flow_itineraries."}
+                itins = get_flow_itineraries(orig, dest)
+                return {
+                    "tool": tool_name, "origin": orig, "destination": dest,
+                    "itin_count": len(itins),
+                    "itineraries": itins[:50],
+                }
+
+            elif qt == "connecting_airports":
+                orig = (args.get("origin") or "").upper().strip()
+                dest = (args.get("destination") or "").upper().strip()
+                if not orig or not dest:
+                    return {"tool": tool_name, "error": "origin and destination are required for connecting_airports."}
+                hubs = _connecting_airports(orig, dest)
+                return {"tool": tool_name, "origin": orig, "destination": dest, "connecting_hubs": hubs}
+
+            elif qt == "legs":
+                orig = (args.get("origin") or "").upper().strip()
+                dest = (args.get("destination") or "").upper().strip()
+                if not orig or not dest:
+                    return {"tool": tool_name, "error": "origin and destination are required for legs."}
+                legs = get_legs_between(orig, dest)
+                return {
+                    "tool": tool_name, "origin": orig, "destination": dest,
+                    "leg_count": len(legs), "legs": legs[:30],
+                }
+
+            elif qt == "carrier_network":
+                carrier = (args.get("carrier") or "").upper().strip()
+                if not carrier:
+                    return {"tool": tool_name, "error": "carrier is required for carrier_network."}
+                leg_ids = get_carrier_legs(carrier)
+                return {"tool": tool_name, "carrier": carrier, "leg_count": len(leg_ids), "leg_ids": leg_ids[:100]}
+
+            elif qt == "kg_sql":
+                sql = (args.get("sql") or "").strip()
+                if not sql:
+                    return {"tool": tool_name, "error": "sql is required for kg_sql."}
+                if not any(sql.upper().lstrip().startswith(kw) for kw in ("SELECT", "WITH")):
+                    return {"tool": tool_name, "error": "Only SELECT/WITH queries are allowed against the KG DuckDB."}
+                con = get_workset_db()
+                if con is None:
+                    return {"tool": tool_name, "error": "KG DuckDB not available."}
+                try:
+                    safe_sql = sql if "LIMIT" in sql.upper() else sql + " LIMIT 200"
+                    rows = con.execute(safe_sql).fetchdf()
+                    return {
+                        "tool": tool_name, "row_count": len(rows),
+                        "rows": _df_to_list(rows),
+                    }
+                except Exception as sql_exc:
+                    return {"tool": tool_name, "error": str(sql_exc)}
+                finally:
+                    con.close()
+
+            else:
+                return {
+                    "tool": tool_name,
+                    "error": (
+                        f"Unknown kg_query type: '{qt}'. "
+                        "Valid types: market_flow, flow_itineraries, connecting_airports, legs, carrier_network, kg_sql"
+                    ),
+                }
 
         elif tool_name == "get_db_schema":
             from app.services.dynamic_query_service import get_db_schema

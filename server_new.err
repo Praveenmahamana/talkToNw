@@ -1,0 +1,7 @@
+2026-04-23 22:00:48.439 | INFO     | app.ai.vertex_client:<module>:31 - Loaded .env from C:\Users\SG0705233\OneDrive - Sabre\Desktop\projects\scheduleAI\airline_schedule_app\.env
+C:\Users\SG0705233\AppData\Roaming\Python\Python311\site-packages\requests\__init__.py:109: RequestsDependencyWarning: urllib3 (2.6.3) or chardet (7.4.3)/charset_normalizer (3.4.4) doesn't match a supported version!
+  warnings.warn(
+INFO:     Started server process [3424]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
