@@ -8582,11 +8582,67 @@ function _siRenderFlightTable() {
     if (_selectedFlightTr) _selectedFlightTr.classList.remove('si-selected-row');
     _selectedFlightTr = tr;
     tr.classList.add('si-selected-row');
+    _siLoadFlightFlowOD(row);
   }, row => {
     return (host && String(row['Flt Desg']||'').startsWith(host)) ? 'si-host-row' : '';
   });
   wrap.innerHTML = '';
   wrap.appendChild(el);
+}
+
+async function _siLoadFlightFlowOD(row) {
+  const flt   = String(row['Flt Desg'] || '').trim();
+  const orig  = String(row['Dept Sta'] || '').trim();
+  const dest  = String(row['Arvl Sta'] || '').trim();
+  const label = document.getElementById('si-flow-flt-label');
+  const hint  = document.getElementById('si-flow-hint');
+  const body  = document.getElementById('si-flow-od-body');
+  if (!body) return;
+  if (label) label.textContent = flt ? ` — ${flt} (${orig}→${dest})` : '';
+  if (hint)  hint.textContent  = '';
+  body.innerHTML = '<div class="si-loading">Loading…</div>';
+  try {
+    const data = await fetch(`${BASE}/api/v1/workset/dashboard/flight-flow-od?flt=${encodeURIComponent(flt)}`).then(r => r.json());
+    const rows = data.rows || [];
+    if (!rows.length) {
+      body.innerHTML = `<div class="si-empty">No flow O&D data for ${escHtml(flt)}.</div>`;
+      return;
+    }
+    const totalTrf = data.total_traffic || rows.reduce((s,r) => s + parseFloat(r.total_traffic||0), 0);
+    const lclRows  = rows.filter(r => parseInt(r.stops||0) === 0);
+    const flowRows = rows.filter(r => parseInt(r.stops||0) >  0);
+    const lclTrf   = lclRows.reduce((s,r)  => s + parseFloat(r.total_traffic||0), 0);
+    const flowTrf  = flowRows.reduce((s,r) => s + parseFloat(r.total_traffic||0), 0);
+
+    // KPI strip
+    const kpiHtml = `<div class="flow-od-kpi-strip">
+      <div class="flow-od-kpi-item"><span class="flow-od-kpi-val">${_siFmt(totalTrf,0)}</span><span class="flow-od-kpi-lbl">Total Pax</span></div>
+      <div class="flow-od-kpi-item"><span class="flow-od-kpi-val" style="color:#3f9f77">${_siFmt(lclTrf,0)}</span><span class="flow-od-kpi-lbl">Local</span></div>
+      <div class="flow-od-kpi-item"><span class="flow-od-kpi-val">${_siFmt(flowTrf,0)}</span><span class="flow-od-kpi-lbl">Flow</span></div>
+      <div class="flow-od-kpi-item"><span class="flow-od-kpi-val">${totalTrf > 0 ? (flowTrf/totalTrf*100).toFixed(1)+'%' : '—'}</span><span class="flow-od-kpi-lbl">Flow%</span></div>
+    </div>`;
+
+    // Bar chart rows
+    const maxTrf = Math.max(...rows.map(r => parseFloat(r.total_traffic||0)), 1);
+    const barsHtml = rows.slice(0, 40).map(r => {
+      const trf   = parseFloat(r.total_traffic||0);
+      const pct   = (trf / maxTrf * 100).toFixed(1);
+      const share = parseFloat(r.traffic_share_pct||0).toFixed(1);
+      const isLcl = parseInt(r.stops||0) === 0;
+      const odLbl = `${escHtml(r.orig||'?')}→${escHtml(r.dest||'?')}`;
+      return `<div class="flow-od-bar-row">
+        <span class="flow-od-bar-label" title="${odLbl}">${odLbl}</span>
+        <div class="flow-od-bar-track">
+          <div class="flow-od-bar-fill" style="width:${pct}%;background:${isLcl?'#3f9f77':'linear-gradient(90deg,#C0553D,#764ba2)'}"></div>
+        </div>
+        <span class="flow-od-bar-val">${_siFmt(trf,0)}<span style="color:#b0aead;font-size:.8em"> ${share}%</span></span>
+      </div>`;
+    }).join('');
+
+    body.innerHTML = kpiHtml + `<div class="flow-od-chart-wrap">${barsHtml}</div>`;
+  } catch(e) {
+    body.innerHTML = `<div class="si-empty">Failed to load flow OD data.</div>`;
+  }
 }
 
 // ── World map promise (load once) ──────────────────────────────────────────
