@@ -8664,7 +8664,7 @@ async function _siLoadFlightFlowOD(row) {
     const lclTrf   = lclRows.reduce((s,r)  => s + parseFloat(r.total_traffic||0), 0);
     const flowTrf  = flowRows.reduce((s,r) => s + parseFloat(r.total_traffic||0), 0);
 
-    // KPI chips
+    // KPI chips + flow-colour legend
     if (kpiWrap) {
       const chips = [
         { label:'Total Pax',  val: _siFmt(totalTrf,0),  col:'#2065d1' },
@@ -8673,10 +8673,19 @@ async function _siLoadFlightFlowOD(row) {
         { label:'Flow%',      val: totalTrf>0 ? (flowTrf/totalTrf*100).toFixed(1)+'%' : '—', col:'#764ba2' },
         { label:'OD Pairs',   val: rows.length,          col:'#555'   },
       ];
-      kpiWrap.innerHTML = chips.map(c =>
-        `<span style="font-size:.72rem;color:${c.col};font-weight:700">${c.val}</span>`+
-        `<span style="font-size:.62rem;color:#908e8b;margin-right:12px"> ${c.label}</span>`
-      ).join('');
+      const legend = [
+        { col:'#f59e0b', tip:'Operated leg endpoints' },
+        { col:'#3f9f77', tip:'<25% flow' },
+        { col:'#2065d1', tip:'25–50% flow' },
+        { col:'#d97706', tip:'50–75% flow' },
+        { col:'#C0553D', tip:'>75% flow' },
+      ].map(l => `<span title="${l.tip}" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${l.col};margin:0 1px;vertical-align:middle;cursor:help"></span>`).join('');
+      kpiWrap.innerHTML =
+        chips.map(c =>
+          `<span style="font-size:.72rem;color:${c.col};font-weight:700">${c.val}</span>`+
+          `<span style="font-size:.62rem;color:#908e8b;margin-right:12px"> ${c.label}</span>`
+        ).join('') +
+        `<span style="margin-left:6px;font-size:.6rem;color:#908e8b;vertical-align:middle">Flow contribution: ${legend}</span>`;
     }
 
     if (!rows.length) {
@@ -8690,20 +8699,52 @@ async function _siLoadFlightFlowOD(row) {
 
     const maxTrf = Math.max(...rows.map(r => parseFloat(r.total_traffic||0)), 1);
 
-    // Collect all unique airports and aggregate traffic
-    const airportTrf = {};
+    // Collect all unique airports and aggregate traffic (local vs flow split)
+    const airportTrf = {}, airportLocalTrf = {}, airportFlowTrf = {};
     rows.forEach(r => {
-      const trf = parseFloat(r.total_traffic||0);
-      airportTrf[r.orig] = (airportTrf[r.orig]||0) + trf;
-      airportTrf[r.dest] = (airportTrf[r.dest]||0) + trf;
+      const trf    = parseFloat(r.total_traffic||0);
+      const isLcl  = parseInt(r.stops||0) === 0;
+      airportTrf[r.orig]      = (airportTrf[r.orig]||0) + trf;
+      airportTrf[r.dest]      = (airportTrf[r.dest]||0) + trf;
+      if (isLcl) {
+        airportLocalTrf[r.orig] = (airportLocalTrf[r.orig]||0) + trf;
+        airportLocalTrf[r.dest] = (airportLocalTrf[r.dest]||0) + trf;
+      } else {
+        airportFlowTrf[r.orig] = (airportFlowTrf[r.orig]||0) + trf;
+        airportFlowTrf[r.dest] = (airportFlowTrf[r.dest]||0) + trf;
+      }
     });
 
-    // Scatter series — airport bubbles
+    // Color scale by flow contribution %
+    // Operated leg endpoints → amber; others: green→blue→amber→red by flow %
+    const _apColor = code => {
+      if (code === orig || code === dest) return '#f59e0b';
+      const lc = airportLocalTrf[code]||0, fc = airportFlowTrf[code]||0;
+      const tot = lc + fc;
+      if (!tot) return '#64748b';
+      const fp = fc / tot;
+      if (fp < 0.25) return '#3f9f77';  // mostly local
+      if (fp < 0.50) return '#2065d1';  // mixed-local
+      if (fp < 0.75) return '#d97706';  // mixed-flow
+      return '#C0553D';                 // mostly flow
+    };
+    const _apFlowPct = code => {
+      const lc = airportLocalTrf[code]||0, fc = airportFlowTrf[code]||0;
+      const tot = lc + fc;
+      return tot ? (fc / tot * 100).toFixed(0) : '—';
+    };
+
+    // Scatter series — airport bubbles, colour-coded by flow contribution
     const scatterData = Object.entries(airportTrf)
       .filter(([code]) => AIRPORT_COORDS[code])
       .map(([code, trf]) => {
         const [lat, lon] = AIRPORT_COORDS[code];
-        return { name: code, value: [lon, lat, trf] };
+        const col = _apColor(code);
+        return {
+          name: code, value: [lon, lat, trf],
+          itemStyle: { color: col },
+          label: { color: col },
+        };
       });
 
     // Lines for the operated leg (bright)
@@ -8740,7 +8781,13 @@ async function _siLoadFlightFlowOD(row) {
       tooltip: {
         trigger: 'item',
         formatter: p => {
-          if (p.seriesType === 'effectScatter') return `<b>${p.name}</b><br>${_siFmt(p.value[2],0)} pax`;
+          if (p.seriesType === 'effectScatter') {
+            const code = p.name;
+            const fp   = _apFlowPct(code);
+            const isLeg = code === orig || code === dest;
+            return `<b>${code}</b><br>${_siFmt(p.value[2],0)} pax`
+              + (isLeg ? '<br><i>Operated leg endpoint</i>' : `<br>Flow: ${fp}%`);
+          }
           return p.name || '';
         },
       },
@@ -8775,16 +8822,15 @@ async function _siLoadFlightFlowOD(row) {
           lineStyle: { color: '#C0553D', curveness: 0.2 },
           zlevel: 2,
         },
-        // Airport bubbles
+        // Airport bubbles — coloured by flow contribution %
         {
           type: 'effectScatter', coordinateSystem: 'geo',
           data: scatterData,
           symbolSize: d => Math.max(4, Math.min(18, Math.sqrt(d[2] / maxTrf) * 22)),
-          itemStyle: { color: '#2065d1', opacity: 0.75 },
           label: {
             show: true, position: 'right',
             formatter: p => p.name,
-            fontSize: 9, color: '#1e293b',
+            fontSize: 9, fontWeight: 700,
           },
           emphasis: { scale: true },
           zlevel: 4,
