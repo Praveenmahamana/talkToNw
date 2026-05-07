@@ -5406,9 +5406,6 @@ async function askQuery() {
     // Filter Schedule Intelligence panel from query context
     siSyncFromQuery(q, _lastAnswer, routeCtx, codes);
 
-    // Sync World View globe filter from detected airports/routes
-    _syncGlobeFilter(q, _lastAnswer, codes, routeCtx);
-
   } catch(e) {
     hideTyping();
     appendBubble('assistant', '⚠ Error: ' + e.message, null);
