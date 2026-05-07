@@ -1538,6 +1538,13 @@
     }
     #si-flow-od-map { flex: 1; width: 100%; background: #f0f4f8; min-height: 220px; }
     #si-flow-od-kpis { display: flex; gap: 0; align-items: center; flex-wrap: wrap; }
+    /* O&D Intelligence tab layout */
+    #si-tab-od-intel.active {
+      display: flex; flex-direction: column;
+      height: calc(100vh - var(--si-total-h, 122px)); overflow: hidden;
+    }
+    #si-tab-od-intel .si-two-panel { flex: 1; overflow: hidden; }
+    #si-itin-map { flex: 1; width: 100%; background: #f0f4f8; min-height: 160px; }
     /* Selected row in market summary */
     .si-selected-row td { background: rgba(34,33,32,0.07) !important; border-left: 3px solid #222120; }
     /* Host badge inline */
@@ -1902,9 +1909,10 @@
   </div>
 
   <!-- O&D Intelligence Tab -->
-  <div id="si-tab-od-intel" class="si-tab-content">
+  <div id="si-tab-od-intel" class="si-tab-content od-intel-layout">
     <div class="si-kpi-strip" id="si-od-kpis"></div>
-    <div class="si-two-panel">
+    <div class="si-two-panel" style="flex:1;overflow:hidden">
+      <!-- Left: Market Summary -->
       <div class="si-left-panel">
         <div class="si-panel-head">
           <h4>Market Summary</h4>
@@ -1914,13 +1922,32 @@
           <div class="si-table-wrap" id="si-market-table"><div class="si-empty">Enter an O&amp;D above and click Load O&amp;D</div></div>
         </div>
       </div>
-      <div class="si-right-panel">
-        <div class="si-panel-head">
-          <h4>Itinerary Report<span id="si-itin-label" style="font-weight:400;color:#72716e;margin-left:6px"></span></h4>
-          <p id="si-itin-hint">Select an airline from Market Summary to filter</p>
+      <!-- Right: Routing map + Itinerary table stacked -->
+      <div class="si-right-panel" style="display:flex;flex-direction:column;overflow:hidden;padding:0">
+        <!-- Routing map -->
+        <div style="flex:0 0 42%;display:flex;flex-direction:column;border-bottom:1px solid #e4e2df;overflow:hidden;min-height:200px">
+          <div class="si-panel-head" style="padding:5px 14px;flex-shrink:0;display:flex;align-items:center;gap:10px">
+            <h4 style="flex-shrink:0">Routing Map</h4>
+            <span style="font-size:.65rem;color:#908e8b;margin-left:auto">
+              <span style="color:#2065d1">●</span> Origin/Dest &nbsp;
+              <span style="color:#f59e0b">●</span> Connect Pt &nbsp;
+              <span style="color:#3f9f77">━</span> Nonstop &nbsp;
+              <span style="color:#C0553D">━</span> Connecting
+            </span>
+          </div>
+          <div id="si-itin-map" style="flex:1;width:100%;background:#f0f4f8;min-height:160px">
+            <div class="si-empty" style="padding-top:30px">← Load an O&amp;D to visualise routing paths</div>
+          </div>
         </div>
-        <div class="si-panel-scroll">
-          <div class="si-table-wrap" id="si-itin-table"><div class="si-empty">← Select an airline row to view its itineraries</div></div>
+        <!-- Itinerary Report table -->
+        <div style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+          <div class="si-panel-head" style="padding:5px 14px;flex-shrink:0">
+            <h4>Itinerary Report<span id="si-itin-label" style="font-weight:400;color:#72716e;margin-left:6px"></span></h4>
+            <p id="si-itin-hint">Select an airline from Market Summary to filter</p>
+          </div>
+          <div class="si-panel-scroll">
+            <div class="si-table-wrap" id="si-itin-table"><div class="si-empty">← Select an airline row to view its itineraries</div></div>
+          </div>
         </div>
       </div>
     </div>
@@ -8362,6 +8389,10 @@ function siSwitchTab(tab) {
   if (tab === 'flight-view') {
     setTimeout(() => _flowOdMapChart?.resize(), 80);
   }
+  // Resize itinerary routing map when od-intel tab is shown
+  if (tab === 'od-intel') {
+    setTimeout(() => _itinMapChart?.resize(), 80);
+  }
 
   // Agents tab— auto-start server and lazy-load iframe
   if (tab === 'agents') {
@@ -8894,6 +8925,7 @@ async function siLoadOD(orig, dest) {
     _siRenderMarketTable();
     _siRenderItinTable(null);
     _siRenderOdKpis(orig, dest);
+    _siRenderItinMap(_SI.itinRows);
   } catch(e) {
     if (marketWrap) marketWrap.innerHTML = '<div class="si-empty">Failed to load market data.</div>';
     if (itinWrap)   itinWrap.innerHTML   = '<div class="si-empty">Failed to load itinerary data.</div>';
@@ -9002,9 +9034,152 @@ function _siRenderItinTable(carrier) {
   });
   wrap.innerHTML = '';
   wrap.appendChild(el);
+  _siRenderItinMap(rows);
 }
 
-// ── Initialise SI Panel ───────────────────────────────────────────────────────
+// ── O&D Intelligence Routing Map ─────────────────────────────────────────────
+let _itinMapChart = null;
+
+async function _siRenderItinMap(rows) {
+  const mapEl = document.getElementById('si-itin-map');
+  if (!mapEl || typeof echarts === 'undefined') return;
+  mapEl.innerHTML = '';
+
+  await _ensureWorldMap();
+
+  if (!rows || !rows.length) {
+    mapEl.innerHTML = '<div class="si-empty" style="padding-top:30px">← Load an O&amp;D to visualise routing paths</div>';
+    return;
+  }
+
+  if (_itinMapChart) { try { _itinMapChart.dispose(); } catch(e){} }
+  _itinMapChart = echarts.init(mapEl, null, { renderer: 'canvas' });
+
+  // Aggregate unique route SEGMENTS (airport-pair arcs) and airport nodes
+  const segMap   = {};   // "A-B" → { from, to, demand, traffic, isNonstop }
+  const airports = {};   // code → { demand, traffic, isOD, isCP }
+
+  const isValid = code => code && code !== '*' && code.length === 3 && AIRPORT_COORDS[code];
+
+  rows.forEach(r => {
+    const orig  = String(r['Dept Arp']          || '').trim().toUpperCase();
+    const dest  = String(r['Arvl Arp']          || '').trim().toUpperCase();
+    const cp1   = String(r['Connect Point 1']   || '').trim().toUpperCase();
+    const cp2   = String(r['Connect Point 2']   || '').trim().toUpperCase();
+    const dem   = parseFloat(r['Total Demand']  || 0);
+    const trf   = parseFloat(r['Total Traffic'] || 0);
+    const stops = parseInt(r['Stops'] || 0);
+
+    if (!isValid(orig) || !isValid(dest)) return;
+
+    // Register O&D airports
+    [orig, dest].forEach(c => {
+      airports[c] = airports[c] || { demand: 0, traffic: 0, isOD: false, isCP: false };
+      airports[c].demand  += dem;
+      airports[c].traffic += trf;
+      airports[c].isOD = true;
+    });
+
+    // Build ordered path
+    const path = [orig];
+    if (isValid(cp1)) { path.push(cp1); airports[cp1] = airports[cp1] || { demand:0, traffic:0, isOD:false, isCP:false }; airports[cp1].isCP = true; airports[cp1].demand += dem; airports[cp1].traffic += trf; }
+    if (isValid(cp2)) { path.push(cp2); airports[cp2] = airports[cp2] || { demand:0, traffic:0, isOD:false, isCP:false }; airports[cp2].isCP = true; airports[cp2].demand += dem; airports[cp2].traffic += trf; }
+    path.push(dest);
+
+    // Add each consecutive segment
+    for (let i = 0; i < path.length - 1; i++) {
+      const a = path[i], b = path[i+1];
+      if (!isValid(a) || !isValid(b)) continue;
+      const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+      if (!segMap[key]) segMap[key] = { from: a, to: b, demand: 0, traffic: 0, stops };
+      segMap[key].demand  += dem;
+      segMap[key].traffic += trf;
+    }
+  });
+
+  const maxTrf = Math.max(...Object.values(segMap).map(s => s.traffic), 1);
+
+  // Lines series
+  const lineData = Object.values(segMap).map(s => {
+    const oc = AIRPORT_COORDS[s.from], dc = AIRPORT_COORDS[s.to];
+    const w  = Math.max(0.8, Math.min(4, s.traffic / maxTrf * 4));
+    const op = Math.max(0.25, Math.min(0.9, s.traffic / maxTrf));
+    return {
+      coords: [[oc[1], oc[0]], [dc[1], dc[0]]],
+      lineStyle: { width: w, opacity: op },
+      value: s.traffic,
+    };
+  });
+
+  // Separate nonstop vs connecting segments
+  const nonstopSegs  = lineData.filter((_, i) => Object.values(segMap)[i].stops === 0);
+  const connectSegs  = lineData.filter((_, i) => Object.values(segMap)[i].stops >  0);
+
+  // Scatter — airports
+  const scatterData = Object.entries(airports)
+    .filter(([code]) => AIRPORT_COORDS[code])
+    .map(([code, info]) => {
+      const [lat, lon] = AIRPORT_COORDS[code];
+      return {
+        name: code,
+        value: [lon, lat, info.traffic],
+        isOD: info.isOD && !info.isCP,
+        isCP: info.isCP,
+      };
+    });
+  const odNodes = scatterData.filter(d => d.isOD);
+  const cpNodes = scatterData.filter(d => d.isCP);
+
+  _itinMapChart.setOption({
+    backgroundColor: '#f0f4f8',
+    tooltip: {
+      trigger: 'item',
+      formatter: p => p.seriesType === 'effectScatter' || p.seriesType === 'scatter'
+        ? `<b>${p.name}</b><br>${_siFmt(p.value[2],0)} pax`
+        : (p.name || ''),
+    },
+    geo: {
+      map: 'world', roam: true, zoom: 1.1, silent: true,
+      itemStyle: { areaColor: '#dce9f5', borderColor: '#b0c4d8', borderWidth: 0.4 },
+      emphasis: { itemStyle: { areaColor: '#dce9f5' } },
+    },
+    series: [
+      // Nonstop arcs — green
+      {
+        type: 'lines', coordinateSystem: 'geo', data: nonstopSegs,
+        lineStyle: { color: '#3f9f77', curveness: 0.2 },
+        effect: { show: nonstopSegs.length <= 8, period: 5, trailLength: 0.3, symbolSize: 4 },
+        zlevel: 2,
+      },
+      // Connecting arcs — red
+      {
+        type: 'lines', coordinateSystem: 'geo', data: connectSegs,
+        lineStyle: { color: '#C0553D', curveness: 0.25, type: 'dashed' },
+        zlevel: 2,
+      },
+      // O&D airports — blue bubbles
+      {
+        type: 'effectScatter', coordinateSystem: 'geo', data: odNodes,
+        symbolSize: d => Math.max(7, Math.min(20, Math.sqrt(d[2] / maxTrf) * 24)),
+        itemStyle: { color: '#2065d1', opacity: 0.85 },
+        label: { show: true, position: 'right', formatter: p => p.name, fontSize: 9, color: '#1e293b' },
+        zlevel: 4,
+      },
+      // Connect-point airports — amber circles
+      {
+        type: 'scatter', coordinateSystem: 'geo', data: cpNodes,
+        symbolSize: d => Math.max(5, Math.min(14, Math.sqrt(d[2] / maxTrf) * 18)),
+        itemStyle: { color: '#f59e0b', opacity: 0.9 },
+        label: { show: true, position: 'right', formatter: p => p.name, fontSize: 9, color: '#1e293b' },
+        zlevel: 4,
+      },
+    ],
+  });
+
+  const ro = new ResizeObserver(() => { _itinMapChart && _itinMapChart.resize(); });
+  ro.observe(mapEl);
+}
+
 
 async function initSiPanel() {
   try {
