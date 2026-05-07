@@ -6,8 +6,8 @@
 <title>SKY ATLAS — WORKSET204</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/topojson@3/dist/topojson.min.js"></script>
+<script src="/static/d3.min.js"></script>
+<script src="/static/topojson.min.js"></script>
 <style>
 /* ── Universal reset: Helvetica 9px everywhere ───────────────── */
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box;
@@ -522,7 +522,7 @@ const dotScale=d3.scaleSqrt().domain([1,maxArpDemand]).range([2,11]).clamp(true)
   const mapG=mapSvg.append('g');
 
   try{
-    const world=await d3.json('https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json');
+    const world=await d3.json('/static/countries-110m.json');
     const countries=topojson.feature(world,world.objects.countries);
     mapG.append('g').selectAll('path').data(countries.features).join('path')
       .attr('fill','#f8fafc')

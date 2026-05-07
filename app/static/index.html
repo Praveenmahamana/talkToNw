@@ -1857,9 +1857,10 @@
       <button class="si-tab" data-tab="agents" onclick="siSwitchTab('agents')" title="Autonomous AI Agents — embedded copilot" style="color:#059669;">🤖 Agents</button>
     </div>
     <div class="si-od-filter" id="si-od-filter" style="display:none">
-      <input id="si-orig" placeholder="Orig" maxlength="3" title="Origin airport" />
+      <input id="si-orig" placeholder="Orig" maxlength="3" title="Origin airport" onkeydown="if(event.key==='Enter')siLoadOD()" style="text-transform:uppercase" />
       <span style="color:#908e8b;font-size:.8rem">→</span>
-      <input id="si-dest" placeholder="Dest" maxlength="3" title="Destination airport" />
+      <input id="si-dest" placeholder="Dest" maxlength="3" title="Destination airport" onkeydown="if(event.key==='Enter')siLoadOD()" style="text-transform:uppercase" />
+      <button onclick="siLoadOD()" style="padding:2px 10px;border-radius:6px;border:1px solid #2065d1;background:#2065d1;color:#fff;cursor:pointer;font-size:.7rem">Load O&amp;D</button>
     </div>
   </div>
 
@@ -8562,9 +8563,12 @@ function _siRenderNetworkTable() {
   ];
   const el = _siTableWithPivot(_SI.networkRows, cols, (row, tr) => {
     // Navigate to O&D Intelligence tab for this OD
-    document.getElementById('si-orig').value = row.orig || '';
-    document.getElementById('si-dest').value = row.dest || '';
+    const orig = (row.orig || '').toUpperCase();
+    const dest = (row.dest || '').toUpperCase();
+    document.getElementById('si-orig').value = orig;
+    document.getElementById('si-dest').value = dest;
     siSwitchTab('od-intel');
+    siLoadOD(orig, dest);
     // Highlight selected row
     document.querySelectorAll('#si-network-table tr').forEach(r => r.classList.remove('si-selected-row'));
     tr.classList.add('si-selected-row');
@@ -8769,6 +8773,55 @@ function _updateGanttPopoverODs(flt, odRows) {
 }
 
 // ── O&D Intelligence Tab ─────────────────────────────────────────────────────
+
+async function siLoadOD(orig, dest) {
+  if (!orig) orig = (document.getElementById('si-orig').value || '').trim().toUpperCase();
+  if (!dest)  dest  = (document.getElementById('si-dest').value  || '').trim().toUpperCase();
+  if (!orig || !dest) return;
+  _SI.currentOrig = orig;
+  _SI.currentDest = dest;
+  _SI.selectedCarrier = null;
+
+  const marketWrap = document.getElementById('si-market-table');
+  const itinWrap   = document.getElementById('si-itin-table');
+  if (marketWrap) marketWrap.innerHTML = '<div class="si-loading">Loading…</div>';
+  if (itinWrap)   itinWrap.innerHTML   = '<div class="si-loading">Loading…</div>';
+  document.getElementById('si-itin-label').textContent = '';
+  document.getElementById('si-itin-hint').textContent  = 'Select an airline from Market Summary to filter';
+  document.getElementById('si-od-kpis').innerHTML = '';
+
+  try {
+    const [mr, ir] = await Promise.all([
+      fetch(`${BASE}/api/v1/workset/dashboard/market-summary?orig=${orig}&dest=${dest}`).then(r => r.json()),
+      fetch(`${BASE}/api/v1/workset/dashboard/itin-report?orig=${orig}&dest=${dest}&top_n=300`).then(r => r.json()),
+    ]);
+    _SI.marketRows = mr.rows || [];
+    _SI.itinRows   = ir.rows || [];
+    _siRenderMarketTable();
+    _siRenderItinTable(null);
+    _siRenderOdKpis(orig, dest);
+  } catch(e) {
+    if (marketWrap) marketWrap.innerHTML = '<div class="si-empty">Failed to load market data.</div>';
+    if (itinWrap)   itinWrap.innerHTML   = '<div class="si-empty">Failed to load itinerary data.</div>';
+  }
+}
+
+function _siRenderOdKpis(orig, dest) {
+  const rows  = _SI.marketRows;
+  const strip = document.getElementById('si-od-kpis');
+  if (!strip) return;
+  if (!rows.length) { strip.innerHTML = ''; return; }
+  const totalDemand  = rows.reduce((s, r) => s + parseFloat(r.total_demand_est  || 0), 0);
+  const totalTraffic = rows.reduce((s, r) => s + parseFloat(r.total_traffic_est || 0), 0);
+  const totalRev     = rows.reduce((s, r) => s + parseFloat(r.total_revenue_est || 0), 0);
+  const carriers     = rows.length;
+  strip.innerHTML = [
+    { label: `${orig} → ${dest}`, value: `${carriers} Airlines` },
+    { label: 'Total Demand',      value: _siFmt(totalDemand,  0) },
+    { label: 'Total Traffic',     value: _siFmt(totalTraffic, 0) },
+    { label: 'Total Revenue',     value: '$' + _siFmt(totalRev, 0) },
+  ].map(k => `<div class="si-kpi"><span class="si-kpi-val">${k.value}</span><span class="si-kpi-label">${k.label}</span></div>`).join('');
+}
 
 function _siRenderMarketTable() {
   const wrap = document.getElementById('si-market-table');
