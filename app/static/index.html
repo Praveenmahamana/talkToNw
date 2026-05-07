@@ -1495,9 +1495,13 @@
     }
 
 
-    .si-kpi-strip {
-      display: flex; gap: 0; border-bottom: 1px solid #e4e2df; background: #f7f6f5; overflow-x: auto;
+    .si-kpi-strip { display: none; }   /* strips moved to header — hidden in-tab */
+    .si-hdr-kpi {
+      font-size: 0.72rem; color: #72716e; padding: 0 10px;
+      border-right: 1px solid #ddd8d3; white-space: nowrap; line-height: 1;
     }
+    .si-hdr-kpi:last-child { border-right: none; }
+    .si-hdr-kpi b { color: #C0553D; font-weight: 700; }
     .si-kpi-item {
       display: flex; flex-direction: column; align-items: center; justify-content: center;
       padding: 10px 18px; border-right: 1px solid #f7f6f5; flex-shrink: 0; min-width: 80px;
@@ -1510,7 +1514,7 @@
     .si-right-panel { flex: 1; min-width: 0; display: flex; flex-direction: column; }
     .si-panel-head {
       display: flex; align-items: center; justify-content: space-between;
-      padding: 8px 14px; border-bottom: 1px solid #f7f6f5; background: #f7f6f5; flex-shrink: 0;
+      padding: 0 14px; min-height: 44px; border-bottom: 1px solid #f7f6f5; background: #f7f6f5; flex-shrink: 0;
     }
     .si-panel-head h4 { font-size: 0.87rem; font-weight: 600; color: #585755; text-transform: uppercase; letter-spacing: .04em; }
     .si-panel-head p { font-size: 0.87rem; color: #908e8b; }
@@ -1523,7 +1527,6 @@
     .si-table-wrap .dyn-table { font-size: 0.87rem; }
     .si-table-wrap .dyn-table th { font-size: 0.87rem; padding: 5px 7px; position: sticky; top: 0; z-index: 1; }
     .si-table-wrap .dyn-table td { padding: 3px 7px; }
-    .si-table-actions { display: flex; align-items: center; justify-content: flex-end; padding: 4px 8px; gap: 4px; border-bottom: 1px solid #f7f6f5; background: #f7f6f5; }
     /* Host row highlight in flight view */
     .si-host-row td { background: #eff6ff !important; }
     .si-host-row:hover td { background: #FEF1EE !important; }
@@ -1847,6 +1850,12 @@
       <span class="si-header-title"><img src="/static/icons/Sabre-Icon-Dashboard.svg" style="width:12px;height:12px;filter:brightness(0) opacity(0.5);vertical-align:middle;margin-right:5px;margin-bottom:2px" alt=""></span>
       <span class="si-host-badge" id="si-host-badge" style="display:none"></span>
       <span class="si-workset-badge" id="si-workset-badge" style="display:none"></span>
+      <!-- Contextual KPI chips — one shown per active tab -->
+      <div id="si-header-kpis" style="display:flex;align-items:center;margin-left:10px;border-left:1px solid #ddd8d3;padding-left:4px">
+        <div id="si-network-kpis" style="display:none;align-items:center"></div>
+        <div id="si-flight-kpis"  style="display:none;align-items:center"></div>
+        <div id="si-od-kpis"      style="display:none;align-items:center"></div>
+      </div>
     </div>
     <div class="si-tabs">
       
@@ -1877,7 +1886,6 @@
 
   <!-- Network Tab -->
   <div id="si-tab-network" class="si-tab-content active">
-    <div class="si-kpi-strip" id="si-network-kpis"></div>
     <div class="si-table-scroll">
       <div class="si-table-wrap" id="si-network-table"><div class="si-loading">Loading network data…</div></div>
     </div>
@@ -1885,7 +1893,6 @@
 
   <!-- Flight View Tab -->
   <div id="si-tab-flight-view" class="si-tab-content">
-    <div class="si-kpi-strip" id="si-flight-kpis"></div>
     <!-- Flights table — top half -->
     <div class="fv-table-wrap">
       <div class="si-panel-head" style="padding:6px 14px">
@@ -1916,7 +1923,6 @@
 
   <!-- O&D Intelligence Tab -->
   <div id="si-tab-od-intel" class="si-tab-content od-intel-layout">
-    <div class="si-kpi-strip" id="si-od-kpis"></div>
     <div class="si-two-panel" style="flex:1;overflow:hidden">
       <!-- Left: Market Summary -->
       <div class="si-left-panel">
@@ -8364,6 +8370,16 @@ function siSwitchTab(tab) {
   const odFilter = document.getElementById('si-od-filter');
   const noFilter = ['chat','interactive-map','simulate','brain','compare','agents'];
   if (odFilter) odFilter.style.display = noFilter.includes(tab) ? 'none' : '';
+  // Show contextual KPI chips in header for the active tab
+  ['network','flight','od'].forEach(k => {
+    const el = document.getElementById(`si-${k === 'flight' ? 'flight' : k === 'od' ? 'od' : 'network'}-kpis`);
+    if (el) el.style.display = 'none';
+  });
+  const kpiMap = { 'network': 'si-network-kpis', 'flight-view': 'si-flight-kpis', 'od-intel': 'si-od-kpis' };
+  if (kpiMap[tab]) {
+    const kpiEl = document.getElementById(kpiMap[tab]);
+    if (kpiEl) kpiEl.style.display = 'flex';
+  }
   // Analysis panel workspace is only relevant in the Network tab
   const ws = document.querySelector('.workspace');
   if (ws) ws.style.display = (tab === 'network') ? 'flex' : 'none';
@@ -8424,7 +8440,7 @@ function _siKpis(containerId, items) {
   const strip = document.getElementById(containerId);
   if (!strip) return;
   strip.innerHTML = items.map(({label, val}) =>
-    `<div class="si-kpi-item"><div class="si-kpi-val">${escHtml(val)}</div><div class="si-kpi-lbl">${escHtml(label)}</div></div>`
+    `<span class="si-hdr-kpi"><b>${escHtml(String(val))}</b> ${escHtml(label)}</span>`
   ).join('');
 }
 
@@ -8460,31 +8476,6 @@ function _siSmartTable(rows, columns, onRowClick, getRowClass) {
     });
   }
   return wrap;
-}
-
-function _siTableWithPivot(rows, columns, onRowClick, getRowClass) {
-  const tableEl = _siSmartTable(rows, columns, onRowClick, getRowClass);
-  const pivotId = 'pv' + Math.random().toString(36).slice(2);
-  const outer = document.createElement('div');
-  // Action bar with pivot button
-  const actionBar = document.createElement('div');
-  actionBar.className = 'si-table-actions';
-  actionBar.innerHTML = `<span style="font-size:.65rem;color:#908e8b">${rows.length} rows</span>
-    <button class="pivot-btn" id="${pivotId}-btn" onclick="togglePivot('${pivotId}',this)">⊞ Pivot</button>`;
-  outer.appendChild(actionBar);
-  outer.appendChild(tableEl);
-  // Build pivot viz data
-  const vizData = {
-    columns: columns.map(c => c.key),
-    rows: rows.map(r => {
-      const obj = {};
-      columns.forEach(c => { obj[c.key] = r[c.key] ?? ''; });
-      return obj;
-    })
-  };
-  const pivotPanel = buildPivotPanel(pivotId, vizData);
-  outer.appendChild(pivotPanel);
-  return outer;
 }
 
 // ── Network Tab ──────────────────────────────────────────────────────────────
@@ -8526,7 +8517,7 @@ function _siRenderNetworkTable() {
     { key: 'abs_plf_diff_pct_est',        label: '|ΔPLF%|',     numeric: true,  render: v => _siFmtPct(v) },
     { key: 'flow_pdd_pct_est',            label: 'Flow%',        numeric: true,  render: v => _siFmtPct(v) },
   ];
-  const el = _siTableWithPivot(_SI.networkRows, cols, (row, tr) => {
+  const el = _siSmartTable(_SI.networkRows, cols, (row, tr) => {
     // Navigate to O&D Intelligence tab for this OD
     const orig = (row.orig || '').toUpperCase();
     const dest = (row.dest || '').toUpperCase();
@@ -8586,12 +8577,12 @@ async function siLoadFlightView(orig='', dest='', carrier='') {
       topRoutes,
     };
 
-    _siKpis('si-flight-kpis', [
-      { label: 'Flights',       val: totalFlights.toLocaleString() },
-      { label: 'Host Airline',  val: eff_carrier || 'All' },
-      { label: 'Total Seats',   val: _siFmtInt(totalSeats) },
-      { label: 'Total Demand',  val: _siFmt(totalDemand, 0) },
-    ]);
+    const fltKpiEl = document.getElementById('si-flight-kpis');
+    if (fltKpiEl) {
+      fltKpiEl.innerHTML =
+        `<span class="si-hdr-kpi"><b>FLIGHTS</b>: ${totalFlights.toLocaleString()}</span>` +
+        `<span class="si-hdr-kpi">Total Seats <b>${_siFmtInt(totalSeats)}</b> vs Demand <b>${_siFmt(totalDemand, 0)}</b></span>`;
+    }
   } catch(e) {
     wrap.innerHTML = `<div class="si-empty">Failed to load: ${escHtml(e.message)}</div>`;
   }
@@ -8625,7 +8616,7 @@ function _siRenderFlightTable() {
     { key: 'Applied A/C Config', label: 'Config', numeric: false },
   ];
   let _selectedFlightTr = null;
-  const el = _siTableWithPivot(_SI.flightRows, cols, (row, tr) => {
+  const el = _siSmartTable(_SI.flightRows, cols, (row, tr) => {
     if (_selectedFlightTr) _selectedFlightTr.classList.remove('si-selected-row');
     _selectedFlightTr = tr;
     tr.classList.add('si-selected-row');
@@ -9023,12 +9014,12 @@ function _siRenderOdKpis(orig, dest) {
   const totalTraffic = rows.reduce((s, r) => s + parseFloat(r.total_traffic_est || 0), 0);
   const totalRev     = rows.reduce((s, r) => s + parseFloat(r.total_revenue_est || 0), 0);
   const carriers     = rows.length;
-  strip.innerHTML = [
-    { label: `${orig} → ${dest}`, value: `${carriers} Airlines` },
-    { label: 'Total Demand',      value: _siFmt(totalDemand,  0) },
-    { label: 'Total Traffic',     value: _siFmt(totalTraffic, 0) },
-    { label: 'Total Revenue',     value: '$' + _siFmt(totalRev, 0) },
-  ].map(k => `<div class="si-kpi"><span class="si-kpi-val">${k.value}</span><span class="si-kpi-label">${k.label}</span></div>`).join('');
+  strip.innerHTML =
+    `<span class="si-hdr-kpi"><b>${escHtml(orig)} → ${escHtml(dest)}</b></span>` +
+    `<span class="si-hdr-kpi"><b>${carriers}</b> Airlines</span>` +
+    `<span class="si-hdr-kpi">Demand <b>${_siFmt(totalDemand, 0)}</b></span>` +
+    `<span class="si-hdr-kpi">Traffic <b>${_siFmt(totalTraffic, 0)}</b></span>` +
+    `<span class="si-hdr-kpi">Revenue <b>$${_siFmt(totalRev, 0)}</b></span>`;
 }
 
 function _siRenderMarketTable() {
@@ -9054,7 +9045,7 @@ function _siRenderMarketTable() {
     }},
   ];
   let selectedTr = null;
-  const el = _siTableWithPivot(_SI.marketRows, cols, (row, tr) => {
+  const el = _siSmartTable(_SI.marketRows, cols, (row, tr) => {
     const carrier = row.carrier;
     if (_SI.selectedCarrier === carrier) {
       // Deselect
