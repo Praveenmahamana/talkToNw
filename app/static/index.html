@@ -1523,21 +1523,21 @@
     .si-host-row td { background: #eff6ff !important; }
     .si-host-row:hover td { background: #FEF1EE !important; }
 
-    /* Flow OD distribution panel */
-    #si-flow-od-panel { min-width: 320px; }
-    .flow-od-chart-wrap { padding: 12px 16px 0; }
-    .flow-od-bar-row {
-      display: flex; align-items: center; gap: 8px; margin-bottom: 5px; font-size: 0.87rem;
+    /* Flight View tab — vertical stack layout */
+    #si-tab-flight-view.active {
+      display: flex; flex-direction: column;
+      height: calc(100vh - var(--si-total-h, 122px)); overflow: hidden;
     }
-    .flow-od-bar-label { width: 68px; flex-shrink: 0; color: #585755; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .flow-od-bar-track { flex: 1; background: #edf2f7; border-radius: 4px; height: 14px; overflow: hidden; }
-    .flow-od-bar-fill  { height: 100%; border-radius: 4px; background: linear-gradient(90deg,#C0553D,#764ba2); transition: width .35s; }
-    .flow-od-bar-val   { width: 42px; text-align: right; color: #72716e; font-size: 0.87rem; flex-shrink: 0; }
-    .flow-od-divider   { border: none; border-top: 1px solid #e4e2df; margin: 10px 0 0; }
-    .flow-od-kpi-strip { display: flex; gap: 0; border-bottom: 1px solid #f7f6f5; background: #f7f6f5; }
-    .flow-od-kpi-item  { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 8px 14px; border-right: 1px solid #f7f6f5; flex-shrink: 0; }
-    .flow-od-kpi-val   { font-size: 0.95rem; font-weight: 700; color: #C0553D; }
-    .flow-od-kpi-lbl   { font-size: 0.87rem; color: #908e8b; text-transform: uppercase; letter-spacing: .05em; margin-top: 2px; }
+    #si-tab-flight-view .fv-table-wrap {
+      flex: 0 0 auto; max-height: 42%; display: flex; flex-direction: column;
+      border-bottom: 1px solid #e4e2df; overflow: hidden;
+    }
+    #si-tab-flight-view .fv-table-wrap .si-panel-scroll { flex:1; overflow-y:auto; }
+    #si-tab-flight-view .fv-map-wrap {
+      flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 280px;
+    }
+    #si-flow-od-map { flex: 1; width: 100%; background: #f0f4f8; min-height: 220px; }
+    #si-flow-od-kpis { display: flex; gap: 0; align-items: center; flex-wrap: wrap; }
     /* Selected row in market summary */
     .si-selected-row td { background: rgba(34,33,32,0.07) !important; border-left: 3px solid #222120; }
     /* Host badge inline */
@@ -1873,24 +1873,30 @@
   <!-- Flight View Tab -->
   <div id="si-tab-flight-view" class="si-tab-content">
     <div class="si-kpi-strip" id="si-flight-kpis"></div>
-    <div class="si-two-panel">
-      <div class="si-left-panel">
-        <div class="si-panel-head">
-          <h4>Flights</h4>
-          <p id="si-flight-hint">Click a row to see flow OD distribution</p>
-        </div>
-        <div class="si-panel-scroll">
-          <div class="si-table-wrap" id="si-flight-table"><div class="si-loading">Loading flight data…</div></div>
-        </div>
+    <!-- Flights table — top half -->
+    <div class="fv-table-wrap">
+      <div class="si-panel-head" style="padding:6px 14px">
+        <h4>Flights</h4>
+        <p id="si-flight-hint">Click a row to map its passenger flow O&amp;Ds</p>
       </div>
-      <div class="si-right-panel" id="si-flow-od-panel">
-        <div class="si-panel-head">
-          <h4>Flow O&amp;D Distribution<span id="si-flow-flt-label" style="font-weight:400;color:#72716e;margin-left:6px"></span></h4>
-          <p id="si-flow-hint">← Select a flight to view pax flow ODs</p>
-        </div>
-        <div id="si-flow-od-body" style="flex:1;overflow-y:auto;padding:0">
-          <div class="si-empty">← Select a flight row to view its passenger flow OD distribution</div>
-        </div>
+      <div class="si-panel-scroll">
+        <div class="si-table-wrap" id="si-flight-table"><div class="si-loading">Loading flight data…</div></div>
+      </div>
+    </div>
+    <!-- Flow O&D world map — bottom half -->
+    <div class="fv-map-wrap">
+      <div class="si-panel-head" style="padding:6px 14px;flex-shrink:0;display:flex;align-items:center;gap:16px">
+        <h4 style="flex-shrink:0">Flow O&amp;D Map<span id="si-flow-flt-label" style="font-weight:400;color:#72716e;margin-left:6px"></span></h4>
+        <div id="si-flow-od-kpis"></div>
+        <span style="margin-left:auto;font-size:.65rem;color:#908e8b">
+          <span style="color:#f59e0b">━</span> Operated leg &nbsp;
+          <span style="color:#3f9f77">╌</span> Local O&D &nbsp;
+          <span style="color:#C0553D">━</span> Flow O&D &nbsp;
+          <span style="color:#2065d1">●</span> Airport
+        </span>
+      </div>
+      <div id="si-flow-od-map">
+        <div class="si-empty" style="margin-top:60px">← Click a flight row to visualise its passenger flow O&amp;D distribution on the map</div>
       </div>
     </div>
   </div>
@@ -8352,6 +8358,10 @@ function siSwitchTab(tab) {
       loadBrainGraph();
     }
   }
+  // Resize Flow O&D map when flight-view tab is shown
+  if (tab === 'flight-view') {
+    setTimeout(() => _flowOdMapChart?.resize(), 80);
+  }
 
   // Agents tab— auto-start server and lazy-load iframe
   if (tab === 'agents') {
@@ -8590,58 +8600,168 @@ function _siRenderFlightTable() {
   wrap.appendChild(el);
 }
 
+let _flowOdMapChart = null;
+
 async function _siLoadFlightFlowOD(row) {
-  const flt   = String(row['Flt Desg'] || '').trim();
-  const orig  = String(row['Dept Sta'] || '').trim();
-  const dest  = String(row['Arvl Sta'] || '').trim();
-  const label = document.getElementById('si-flow-flt-label');
-  const hint  = document.getElementById('si-flow-hint');
-  const body  = document.getElementById('si-flow-od-body');
-  if (!body) return;
-  if (label) label.textContent = flt ? ` — ${flt} (${orig}→${dest})` : '';
-  if (hint)  hint.textContent  = '';
-  body.innerHTML = '<div class="si-loading">Loading…</div>';
+  const flt  = String(row['Flt Desg'] || '').trim();
+  const orig = String(row['Dept Sta'] || '').trim();
+  const dest = String(row['Arvl Sta'] || '').trim();
+  const label   = document.getElementById('si-flow-flt-label');
+  const kpiWrap = document.getElementById('si-flow-od-kpis');
+  const mapEl   = document.getElementById('si-flow-od-map');
+  if (!mapEl) return;
+  if (label) label.textContent = flt ? ` — ${flt}  ${orig}→${dest}` : '';
+  if (kpiWrap) kpiWrap.innerHTML = '<span style="color:#908e8b;font-size:.7rem">Loading…</span>';
+  mapEl.innerHTML = '';
+
   try {
-    const data = await fetch(`${BASE}/api/v1/workset/dashboard/flight-flow-od?flt=${encodeURIComponent(flt)}`).then(r => r.json());
+    const [data] = await Promise.all([
+      fetch(`${BASE}/api/v1/workset/dashboard/flight-flow-od?flt=${encodeURIComponent(flt)}`).then(r => r.json()),
+      _ensureWorldMap(),
+    ]);
     const rows = data.rows || [];
-    if (!rows.length) {
-      body.innerHTML = `<div class="si-empty">No flow O&D data for ${escHtml(flt)}.</div>`;
-      return;
-    }
+
     const totalTrf = data.total_traffic || rows.reduce((s,r) => s + parseFloat(r.total_traffic||0), 0);
     const lclRows  = rows.filter(r => parseInt(r.stops||0) === 0);
     const flowRows = rows.filter(r => parseInt(r.stops||0) >  0);
     const lclTrf   = lclRows.reduce((s,r)  => s + parseFloat(r.total_traffic||0), 0);
     const flowTrf  = flowRows.reduce((s,r) => s + parseFloat(r.total_traffic||0), 0);
 
-    // KPI strip
-    const kpiHtml = `<div class="flow-od-kpi-strip">
-      <div class="flow-od-kpi-item"><span class="flow-od-kpi-val">${_siFmt(totalTrf,0)}</span><span class="flow-od-kpi-lbl">Total Pax</span></div>
-      <div class="flow-od-kpi-item"><span class="flow-od-kpi-val" style="color:#3f9f77">${_siFmt(lclTrf,0)}</span><span class="flow-od-kpi-lbl">Local</span></div>
-      <div class="flow-od-kpi-item"><span class="flow-od-kpi-val">${_siFmt(flowTrf,0)}</span><span class="flow-od-kpi-lbl">Flow</span></div>
-      <div class="flow-od-kpi-item"><span class="flow-od-kpi-val">${totalTrf > 0 ? (flowTrf/totalTrf*100).toFixed(1)+'%' : '—'}</span><span class="flow-od-kpi-lbl">Flow%</span></div>
-    </div>`;
+    // KPI chips
+    if (kpiWrap) {
+      const chips = [
+        { label:'Total Pax',  val: _siFmt(totalTrf,0),  col:'#2065d1' },
+        { label:'Local',      val: _siFmt(lclTrf,0),    col:'#3f9f77' },
+        { label:'Flow',       val: _siFmt(flowTrf,0),   col:'#C0553D' },
+        { label:'Flow%',      val: totalTrf>0 ? (flowTrf/totalTrf*100).toFixed(1)+'%' : '—', col:'#764ba2' },
+        { label:'OD Pairs',   val: rows.length,          col:'#555'   },
+      ];
+      kpiWrap.innerHTML = chips.map(c =>
+        `<span style="font-size:.72rem;color:${c.col};font-weight:700">${c.val}</span>`+
+        `<span style="font-size:.62rem;color:#908e8b;margin-right:12px"> ${c.label}</span>`
+      ).join('');
+    }
 
-    // Bar chart rows
+    if (!rows.length) {
+      mapEl.innerHTML = `<div class="si-empty" style="margin-top:60px">No flow O&D data for ${escHtml(flt)}.</div>`;
+      return;
+    }
+
+    // ── Build ECharts geo map ────────────────────────────────────────────────
+    if (_flowOdMapChart) { try { _flowOdMapChart.dispose(); } catch(e){} }
+    _flowOdMapChart = echarts.init(mapEl, null, { renderer: 'canvas' });
+
     const maxTrf = Math.max(...rows.map(r => parseFloat(r.total_traffic||0)), 1);
-    const barsHtml = rows.slice(0, 40).map(r => {
-      const trf   = parseFloat(r.total_traffic||0);
-      const pct   = (trf / maxTrf * 100).toFixed(1);
-      const share = parseFloat(r.traffic_share_pct||0).toFixed(1);
-      const isLcl = parseInt(r.stops||0) === 0;
-      const odLbl = `${escHtml(r.orig||'?')}→${escHtml(r.dest||'?')}`;
-      return `<div class="flow-od-bar-row">
-        <span class="flow-od-bar-label" title="${odLbl}">${odLbl}</span>
-        <div class="flow-od-bar-track">
-          <div class="flow-od-bar-fill" style="width:${pct}%;background:${isLcl?'#3f9f77':'linear-gradient(90deg,#C0553D,#764ba2)'}"></div>
-        </div>
-        <span class="flow-od-bar-val">${_siFmt(trf,0)}<span style="color:#b0aead;font-size:.8em"> ${share}%</span></span>
-      </div>`;
-    }).join('');
 
-    body.innerHTML = kpiHtml + `<div class="flow-od-chart-wrap">${barsHtml}</div>`;
+    // Collect all unique airports and aggregate traffic
+    const airportTrf = {};
+    rows.forEach(r => {
+      const trf = parseFloat(r.total_traffic||0);
+      airportTrf[r.orig] = (airportTrf[r.orig]||0) + trf;
+      airportTrf[r.dest] = (airportTrf[r.dest]||0) + trf;
+    });
+
+    // Scatter series — airport bubbles
+    const scatterData = Object.entries(airportTrf)
+      .filter(([code]) => AIRPORT_COORDS[code])
+      .map(([code, trf]) => {
+        const [lat, lon] = AIRPORT_COORDS[code];
+        return { name: code, value: [lon, lat, trf] };
+      });
+
+    // Lines for the operated leg (bright)
+    const legLines = [];
+    const origCoord = AIRPORT_COORDS[orig];
+    const destCoord = AIRPORT_COORDS[dest];
+    if (origCoord && destCoord) {
+      legLines.push({
+        coords: [[origCoord[1], origCoord[0]], [destCoord[1], destCoord[0]]],
+        lineStyle: { color: '#f59e0b', width: 3, opacity: 1 },
+      });
+    }
+
+    // Lines for flow ODs (local = green, flow = red-purple), opacity by traffic share
+    const localLines = [], flowLines = [];
+    rows.forEach(r => {
+      const oc = AIRPORT_COORDS[r.orig], dc = AIRPORT_COORDS[r.dest];
+      if (!oc || !dc) return;
+      const trf  = parseFloat(r.total_traffic||0);
+      const op   = Math.max(0.15, Math.min(0.85, trf / maxTrf));
+      const w    = Math.max(0.5, Math.min(3.5, trf / maxTrf * 3));
+      const isLcl = parseInt(r.stops||0) === 0;
+      const entry = {
+        coords: [[oc[1], oc[0]], [dc[1], dc[0]]],
+        lineStyle: { width: w, opacity: op },
+        value: trf,
+        name: `${r.orig}→${r.dest}: ${_siFmt(trf,0)} pax`,
+      };
+      (isLcl ? localLines : flowLines).push(entry);
+    });
+
+    _flowOdMapChart.setOption({
+      backgroundColor: '#f0f4f8',
+      tooltip: {
+        trigger: 'item',
+        formatter: p => {
+          if (p.seriesType === 'effectScatter') return `<b>${p.name}</b><br>${_siFmt(p.value[2],0)} pax`;
+          return p.name || '';
+        },
+      },
+      geo: {
+        map: 'world',
+        roam: true,
+        zoom: 1.2,
+        silent: true,
+        itemStyle: { areaColor: '#dce9f5', borderColor: '#b0c4d8', borderWidth: 0.5 },
+        emphasis: { itemStyle: { areaColor: '#dce9f5' } },
+      },
+      series: [
+        // Operated leg — amber, prominent
+        {
+          type: 'lines', coordinateSystem: 'geo',
+          data: legLines,
+          effect: { show: true, period: 4, trailLength: 0.4, symbolSize: 5 },
+          lineStyle: { color: '#f59e0b', width: 3, opacity: 1, curveness: 0.25 },
+          zlevel: 3,
+        },
+        // Local ODs — green
+        {
+          type: 'lines', coordinateSystem: 'geo',
+          data: localLines,
+          lineStyle: { color: '#3f9f77', curveness: 0.2, type: 'dashed' },
+          zlevel: 2,
+        },
+        // Flow ODs — red-purple
+        {
+          type: 'lines', coordinateSystem: 'geo',
+          data: flowLines,
+          lineStyle: { color: '#C0553D', curveness: 0.2 },
+          zlevel: 2,
+        },
+        // Airport bubbles
+        {
+          type: 'effectScatter', coordinateSystem: 'geo',
+          data: scatterData,
+          symbolSize: d => Math.max(4, Math.min(18, Math.sqrt(d[2] / maxTrf) * 22)),
+          itemStyle: { color: '#2065d1', opacity: 0.75 },
+          label: {
+            show: true, position: 'right',
+            formatter: p => p.name,
+            fontSize: 9, color: '#1e293b',
+          },
+          emphasis: { scale: true },
+          zlevel: 4,
+        },
+      ],
+    });
+
+    // Responsive resize
+    const ro = new ResizeObserver(() => { _flowOdMapChart && _flowOdMapChart.resize(); });
+    ro.observe(mapEl);
+
   } catch(e) {
-    body.innerHTML = `<div class="si-empty">Failed to load flow OD data.</div>`;
+    mapEl.innerHTML = `<div class="si-empty">Failed to render flow O&D map.</div>`;
+    if (kpiWrap) kpiWrap.innerHTML = '';
   }
 }
 
